@@ -398,6 +398,17 @@ def create_app() -> FastAPI:
         result = ScannerService(database).scan_once()
         return ScanResponse(scanned=result.scanned, queued=result.queued, skipped=result.skipped)
 
+    @app.get("/api/admin/scans/status")
+    def get_scan_status() -> dict[str, Any]:
+        database = get_database(app)
+        config = database.get_config()
+        status = database.get_scan_status()
+        return {
+            **status,
+            "scan_enabled": bool(config["file"].get("scan_enabled", True)),
+            "pending_count": database.count_tasks_by_status("pending"),
+        }
+
     @app.post("/api/admin/work/run-next")
     def run_next_task() -> dict[str, bool]:
         database = get_database(app)

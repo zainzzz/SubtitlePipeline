@@ -30,6 +30,10 @@ DEFAULT_CONFIG = {
         "scan_interval_seconds": 5,
         "min_size_mb": 128,
         "max_size_mb": 8192,
+        "exclude_dirs": [],
+        "input_dirs": [],
+        "scan_enabled": True,
+        "max_pending_tasks": 100,
     },
     "processing": {
         "max_retries": 1,
