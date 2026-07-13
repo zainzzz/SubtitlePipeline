@@ -193,6 +193,18 @@ class Database:
                     updated_at TEXT NOT NULL,
                     UNIQUE(group_name, key_name)
                 );
+
+                CREATE TABLE IF NOT EXISTS translation_cache (
+                    source_hash TEXT NOT NULL,
+                    target_language TEXT NOT NULL,
+                    llm_type TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    custom_prompt_hash TEXT NOT NULL,
+                    translated_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (source_hash, target_language, llm_type, model, content_type, custom_prompt_hash)
+                );
                 """
             )
             self._ensure_column(connection, "tasks", "source_size_bytes", "INTEGER NOT NULL DEFAULT 0")
@@ -652,6 +664,66 @@ class Database:
             "mtime": mtime,
             "stable_hits": stable_hits,
         }
+
+    def get_translation_cache(
+        self,
+        source_hash: str,
+        target_language: str,
+        llm_type: str,
+        model: str,
+        content_type: str,
+        custom_prompt_hash: str,
+    ) -> list[str] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT translated_json
+                FROM translation_cache
+                WHERE source_hash = ?
+                  AND target_language = ?
+                  AND llm_type = ?
+                  AND model = ?
+                  AND content_type = ?
+                  AND custom_prompt_hash = ?
+                LIMIT 1
+                """,
+                (source_hash, target_language, llm_type, model, content_type, custom_prompt_hash),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["translated_json"])
+        if not isinstance(value, list):
+            return None
+        return [str(item) for item in value]
+
+    def set_translation_cache(
+        self,
+        source_hash: str,
+        target_language: str,
+        llm_type: str,
+        model: str,
+        content_type: str,
+        custom_prompt_hash: str,
+        translated_lines: list[str],
+    ) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO translation_cache
+                    (source_hash, target_language, llm_type, model, content_type,
+                     custom_prompt_hash, translated_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT
+                    (source_hash, target_language, llm_type, model, content_type, custom_prompt_hash)
+                DO UPDATE SET translated_json = excluded.translated_json,
+                              created_at = excluded.created_at
+                """,
+                (
+                    source_hash, target_language, llm_type, model, content_type,
+                    custom_prompt_hash, json.dumps(translated_lines, ensure_ascii=False), now,
+                ),
+            )
 
     def has_active_task(self, path_key: str) -> bool:
         with self.connect() as connection:
