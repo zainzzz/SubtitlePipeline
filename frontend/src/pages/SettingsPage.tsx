@@ -310,6 +310,28 @@ export function SettingsPage() {
     )
   }
 
+  const addInputDir = (value: string) => {
+    const list = [...config.file.input_dirs]
+    if (!list.includes(value)) {
+      setField('file', 'input_dirs', [...list, value])
+    }
+  }
+
+  const removeInputDir = (value: string) => {
+    setField('file', 'input_dirs', config.file.input_dirs.filter((item) => item !== value))
+  }
+
+  const addExcludeDir = (value: string) => {
+    const list = [...config.file.exclude_dirs]
+    if (!list.includes(value)) {
+      setField('file', 'exclude_dirs', [...list, value])
+    }
+  }
+
+  const removeExcludeDir = (value: string) => {
+    setField('file', 'exclude_dirs', config.file.exclude_dirs.filter((item) => item !== value))
+  }
+
   const addTargetLanguage = (value: string) => {
     const list = [...config.translation.target_languages]
     if (!list.includes(value)) {
@@ -556,6 +578,20 @@ export function SettingsPage() {
                 onAdd={addFileExtension}
                 onRemove={removeFileExtension}
               />
+              <TagEditor
+                label="额外扫描目录（可选，留空则只用输入目录）"
+                values={config.file.input_dirs}
+                placeholder="例如 /media/movies"
+                onAdd={addInputDir}
+                onRemove={removeInputDir}
+              />
+              <TagEditor
+                label="排除目录名（支持通配符 *，如 预告*、Sample、@eaDir）"
+                values={config.file.exclude_dirs}
+                placeholder="例如 Sample"
+                onAdd={addExcludeDir}
+                onRemove={removeExcludeDir}
+              />
               <div className="field-block">
                 <label className="switch-row">
                   <span>输出到源文件目录</span>
@@ -582,6 +618,17 @@ export function SettingsPage() {
                   <span>最大文件（MB）</span>
                   <input type="number" value={config.file.max_size_mb} onChange={(event) => setField('file', 'max_size_mb', Number(event.target.value))} />
                 </label>
+                <label>
+                  <span>最大排队任务数</span>
+                  <input type="number" value={config.file.max_pending_tasks} onChange={(event) => setField('file', 'max_pending_tasks', Number(event.target.value))} />
+                </label>
+                <div className="field-block">
+                  <label className="switch-row">
+                    <span>启用扫描</span>
+                    <input type="checkbox" checked={config.file.scan_enabled} onChange={(event) => setField('file', 'scan_enabled', event.target.checked)} />
+                  </label>
+                  <span className="muted">关闭后扫描器暂停，不再发现新文件入队。</span>
+                </div>
               </div>
             </section>
           )}
