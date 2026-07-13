@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -329,6 +330,20 @@ def parse_chunk_output(
     )
 
 
+def _translation_cache_key(
+    chunk: TranslationChunk,
+    target_language: str,
+    llm_type: str,
+    model: str,
+    content_type: str,
+    custom_prompt: str,
+) -> tuple[str, str, str, str, str, str]:
+    source_text = "\n".join(line.text for line in chunk.main_segments)
+    source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+    custom_prompt_hash = hashlib.sha256((custom_prompt or "").encode("utf-8")).hexdigest()[:16]
+    return (source_hash, target_language, llm_type, model, content_type, custom_prompt_hash)
+
+
 class ChunkedTranslator:
     def __init__(
         self,
@@ -336,11 +351,17 @@ class ChunkedTranslator:
         content_type: str,
         custom_prompt: str,
         on_chunk_complete=None,
+        database: Any = None,
+        llm_type: str = "",
+        model: str = "",
     ):
         self.provider = provider
         self.content_type = content_type
         self.custom_prompt = custom_prompt
         self.on_chunk_complete = on_chunk_complete
+        self.database = database
+        self.llm_type = llm_type
+        self.model = model
         self.pause_event = threading.Event()
         self.pause_event.set()
 
@@ -392,9 +413,25 @@ class ChunkedTranslator:
 
     def _translate_chunk(self, chunk: TranslationChunk, target_language: str) -> list[str]:
         self.pause_event.wait()
+        cacheable = self.database is not None and isinstance(self.provider, LLMTranslationProvider)
+        cache_key = (
+            _translation_cache_key(
+                chunk, target_language, self.llm_type, self.model, self.content_type, self.custom_prompt
+            )
+            if cacheable
+            else None
+        )
+        if cache_key is not None:
+            cached = self.database.get_translation_cache(*cache_key)
+            if cached is not None:
+                return cached
         if isinstance(self.provider, LLMTranslationProvider):
-            return self.provider.translate_chunk(chunk, target_language, self.content_type, self.custom_prompt)
-        return self.provider.translate_batch([line.text for line in chunk.main_segments], target_language)
+            translated = self.provider.translate_chunk(chunk, target_language, self.content_type, self.custom_prompt)
+        else:
+            translated = self.provider.translate_batch([line.text for line in chunk.main_segments], target_language)
+        if cache_key is not None:
+            self.database.set_translation_cache(*cache_key, translated)
+        return translated
 
 
 class LLMTranslationProvider(TranslationProvider):
@@ -846,6 +883,7 @@ def translate_segments(
     context: TaskContext,
     segments: list[dict[str, Any]],
     progress_callback=None,
+    database: Any = None,
 ) -> dict[str, list[str]]:
     translation_config = context.config_snapshot["translation"]
     if not translation_config["enabled"]:
@@ -869,7 +907,15 @@ def translate_segments(
             completed_chunks += 1
             progress_callback(completed_chunks, total_chunks)
 
-    translator = ChunkedTranslator(provider, content_type, custom_prompt, on_chunk_complete)
+    translator = ChunkedTranslator(
+        provider,
+        content_type,
+        custom_prompt,
+        on_chunk_complete,
+        database=database,
+        llm_type=str(translation_config.get("llm_type", "openai-compatible")).strip(),
+        model=str(translation_config["model"]).strip(),
+    )
     for language in target_languages:
         last_error: Exception | None = None
         for _ in range(max_retries):
@@ -921,6 +967,31 @@ def get_subtitle_target_dir(context: TaskContext) -> Path:
     if output_to_source_dir:
         return source_path.parent
     return Path(os.environ.get("SUBPIPELINE_OUTPUT_DIR", "/output"))
+
+
+def expected_target_subtitle_paths(
+    source_path: Path,
+    file_config: dict[str, Any],
+    subtitle_config: dict[str, Any],
+    translation_config: dict[str, Any],
+) -> list[Path]:
+    # 枚举该视频预期的目标字幕路径;任一已存在则视为无需再翻译
+    if not translation_config.get("enabled"):
+        return []
+    target_languages = [str(lang) for lang in translation_config.get("target_languages", [])]
+    if not target_languages:
+        return []
+    template = str(subtitle_config["filename_template"])
+    stem = source_path.stem
+    if bool(file_config.get("output_to_source_dir", True)):
+        target_dir = source_path.parent
+    else:
+        target_dir = Path(os.environ.get("SUBPIPELINE_OUTPUT_DIR", "/output"))
+    bilingual = bool(subtitle_config.get("bilingual"))
+    bilingual_mode = str(subtitle_config.get("bilingual_mode", "merge"))
+    if bilingual and bilingual_mode == "merge":
+        return [target_dir / template.format(stem=stem, lang="bilingual")]
+    return [target_dir / template.format(stem=stem, lang=language) for language in target_languages]
 
 
 def build_subtitle_tracks(context: TaskContext, translations: dict[str, list[str]]) -> list[dict[str, Any]]:

@@ -17,6 +17,7 @@ from .pipeline import (
     cleanup_intermediates,
     cleanup_work_dir_intermediates,
     ensure_intermediates_dir,
+    expected_target_subtitle_paths,
     extract_audio,
     load_asr_result,
     load_aligned_segments,
@@ -69,6 +70,17 @@ def _should_skip_scan_path(path: Path, config: dict[str, Any]) -> bool:
             return True
     mux_suffix = _mux_output_suffix(config)
     return bool(mux_suffix and path.name.endswith(mux_suffix))
+
+
+def _has_existing_target_subtitle(path: Path, config: dict[str, Any]) -> bool:
+    # 按当前字幕命名规则,检查是否已有目标语言字幕;命中则视为无需再处理
+    expected = expected_target_subtitle_paths(
+        path,
+        config.get("file", {}),
+        config.get("subtitle", {}),
+        config.get("translation", {}),
+    )
+    return any(p.exists() for p in expected)
 
 
 @dataclass
@@ -138,6 +150,9 @@ class ScannerService:
                 skipped += 1
                 continue
             if self.database.has_active_task(observed["path_key"]):
+                skipped += 1
+                continue
+            if _has_existing_target_subtitle(path, config):
                 skipped += 1
                 continue
             parent_dir_ctime = _dir_ctime(str(path.parent))
@@ -296,6 +311,7 @@ class WorkerService:
                         "translate",
                         60 + int(20 * current / total),
                     ),
+                    database=self.database,
                 ),
             )
             save_translations(context, translations)
