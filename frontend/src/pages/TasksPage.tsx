@@ -138,7 +138,9 @@ export function TasksPage() {
           <button disabled={scanStatus === null} onClick={() => void toggleScan()}>
             {scanStatus === null ? '加载中' : scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
           </button>
-          <button disabled={loading} onClick={() => void load({ checkResume: true })}>立即刷新</button>
+          <button disabled={loading} onClick={() => void load({ checkResume: true })}>
+            {loading ? '刷新中…' : '立即刷新'}
+          </button>
         </div>
       </header>
       {error ? <div className="alert error">{error}</div> : null}
@@ -180,7 +182,6 @@ export function TasksPage() {
             </button>
           </div>
         </div>
-        {loading ? <div className="loading-inline"><span className="spinner" />加载中…</div> : null}
         <table className="task-table">
           <thead>
             <tr>
