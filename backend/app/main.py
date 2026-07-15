@@ -212,6 +212,13 @@ def create_app() -> FastAPI:
             cancel_requested=bool(task["cancel_requested"]),
         )
 
+    @app.delete("/api/tasks/{task_id}")
+    def delete_task(task_id: int) -> dict[str, Any]:
+        database = get_database(app)
+        if not database.delete_task(task_id):
+            raise HTTPException(status_code=404, detail="task not found")
+        return {"deleted": task_id}
+
     @app.get("/api/tasks/{task_id}/resume-check")
     def get_resume_check(task_id: int) -> dict[str, Any]:
         database = get_database(app)

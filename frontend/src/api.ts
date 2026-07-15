@@ -414,6 +414,10 @@ export function cancelTask(taskId: number): Promise<void> {
   return request<void>(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
 }
 
+export function deleteTask(taskId: number): Promise<void> {
+  return request<void>(`/api/tasks/${taskId}`, { method: 'DELETE' })
+}
+
 export function getConfig(): Promise<AppConfig> {
   return request<AppConfig>('/api/config')
 }

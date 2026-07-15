@@ -1002,6 +1002,12 @@ class Database:
             raise RuntimeError("failed to reload task after failure")
         return updated
 
+    def delete_task(self, task_id: int) -> bool:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM task_logs WHERE task_id = ?", (task_id,))
+            cursor = connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return cursor.rowcount > 0
+
     def is_cancel_requested(self, task_id: int) -> bool:
         with self.connect() as connection:
             row = connection.execute(
