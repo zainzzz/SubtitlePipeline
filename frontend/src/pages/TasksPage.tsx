@@ -39,7 +39,8 @@ export function TasksPage() {
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const navigate = useNavigate()
 
-  const load = useCallback(async () => {
+  // 仅在 tab 切换或手动刷新时做 resume feasibility 检查，不再每 3 秒轮询中重复触发
+  const load = useCallback(async (checkResume = false) => {
     setLoading(true)
     try {
       const nextData = await getTasks(activeTab === 'all' ? undefined : activeTab, currentPage, PAGE_SIZE)
@@ -49,20 +50,22 @@ export function TasksPage() {
       } catch {
         // 扫描状态可选,忽略错误
       }
-      const failedTasks = nextData.items.filter((task) => task.status === 'failed')
-      if (failedTasks.length > 0) {
-        const checkEntries = await Promise.all(
-          failedTasks.map(async (task) => {
-            try {
-              return [task.id, await checkResumeFeasibility(task.id)] as const
-            } catch {
-              return [task.id, { can_resume: false, missing: [] }] as const
-            }
-          }),
-        )
-        setResumeChecks(Object.fromEntries(checkEntries))
-      } else {
-        setResumeChecks({})
+      if (checkResume) {
+        const failedTasks = nextData.items.filter((task) => task.status === 'failed')
+        if (failedTasks.length > 0) {
+          const checkEntries = await Promise.all(
+            failedTasks.map(async (task) => {
+              try {
+                return [task.id, await checkResumeFeasibility(task.id)] as const
+              } catch {
+                return [task.id, { can_resume: false, missing: [] }] as const
+              }
+            }),
+          )
+          setResumeChecks(Object.fromEntries(checkEntries))
+        } else {
+          setResumeChecks({})
+        }
       }
       setError('')
     } catch (err) {
@@ -72,7 +75,7 @@ export function TasksPage() {
     }
   }, [activeTab, currentPage])
 
-  usePolling(load, 3000, [activeTab, currentPage])
+  usePolling(() => load(false), 3000, [activeTab, currentPage])
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
   const visiblePages = useMemo(() => getVisiblePages(currentPage, totalPages), [currentPage, totalPages])
@@ -85,6 +88,7 @@ export function TasksPage() {
   const handleTabChange = (tab: TaskTab) => {
     setActiveTab(tab)
     setCurrentPage(1)
+    setResumeChecks({}) // clear stale resume state
   }
 
   const handleAction = async (taskId: number, type: 'cancel' | 'restart' | 'resume' | 'delete') => {
@@ -99,7 +103,7 @@ export function TasksPage() {
       } else {
         await retryTask(taskId, 'restart')
       }
-      await load()
+      await load(true) // re-check resume feasibility after state-changing actions
     } catch (err) {
       setError(err instanceof Error ? err.message : '任务操作失败')
     }
@@ -110,6 +114,7 @@ export function TasksPage() {
       const cfg = await getConfig()
       await updateConfig({ file: { ...cfg.file, scan_enabled: !cfg.file.scan_enabled } })
       setScanStatus(await getScanStatus())
+      await load(false) // scan status changed, refresh task list but skip resume checks
     } catch (err) {
       setError(err instanceof Error ? err.message : '扫描开关切换失败')
     }
@@ -123,14 +128,14 @@ export function TasksPage() {
           <p>轮询刷新当前任务状态、阶段和进度。</p>
         </div>
         <div className="header-actions">
-          <span className="muted">
-            扫描:{scanStatus?.scan_enabled ? '运行中' : '已暂停'}
-            {scanStatus?.throttled ? '(限流)' : ''}
+          <span className={`scan-badge ${scanStatus?.scan_enabled ? 'scan-running' : 'scan-paused'}`}>
+            {scanStatus?.scan_enabled ? '● 扫描运行中' : '○ 扫描已暂停'}
+            {scanStatus?.throttled ? ' · 限流中' : ''}
           </span>
           <button onClick={() => void toggleScan()}>
             {scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
           </button>
-          <button onClick={() => void load()}>立即刷新</button>
+          <button onClick={() => void load(true)}>立即刷新</button>
         </div>
       </header>
       {error ? <div className="alert error">{error}</div> : null}
@@ -172,7 +177,7 @@ export function TasksPage() {
             </button>
           </div>
         </div>
-        {loading ? <div className="muted">加载中…</div> : null}
+        {loading ? <div className="loading-inline"><span className="spinner" />加载中…</div> : null}
         <table className="task-table">
           <thead>
             <tr>
