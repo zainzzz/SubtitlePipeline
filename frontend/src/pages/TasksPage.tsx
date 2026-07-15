@@ -40,8 +40,9 @@ export function TasksPage() {
   const navigate = useNavigate()
 
   // 仅在 tab 切换或手动刷新时做 resume feasibility 检查，不再每 3 秒轮询中重复触发
-  const load = useCallback(async (checkResume = false) => {
-    setLoading(true)
+  const load = useCallback(async (opts: { checkResume?: boolean; quiet?: boolean } = {}) => {
+    const { checkResume = false, quiet = false } = opts
+    if (!quiet) setLoading(true)
     try {
       const nextData = await getTasks(activeTab === 'all' ? undefined : activeTab, currentPage, PAGE_SIZE)
       setData(nextData)
@@ -71,11 +72,11 @@ export function TasksPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '任务读取失败')
     } finally {
-      setLoading(false)
+      if (!quiet) setLoading(false)
     }
   }, [activeTab, currentPage])
 
-  usePolling(() => load(false), 3000, [activeTab, currentPage])
+  usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage])
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
   const visiblePages = useMemo(() => getVisiblePages(currentPage, totalPages), [currentPage, totalPages])
@@ -103,7 +104,7 @@ export function TasksPage() {
       } else {
         await retryTask(taskId, 'restart')
       }
-      await load(true) // re-check resume feasibility after state-changing actions
+      await load({ checkResume: true }) // re-check resume feasibility after state-changing actions
     } catch (err) {
       setError(err instanceof Error ? err.message : '任务操作失败')
     }
@@ -114,7 +115,7 @@ export function TasksPage() {
       const cfg = await getConfig()
       await updateConfig({ file: { ...cfg.file, scan_enabled: !cfg.file.scan_enabled } })
       setScanStatus(await getScanStatus())
-      await load(false) // scan status changed, refresh task list but skip resume checks
+      await load({ quiet: true }) // scan status changed, refresh task list but skip resume checks
     } catch (err) {
       setError(err instanceof Error ? err.message : '扫描开关切换失败')
     }
@@ -135,7 +136,7 @@ export function TasksPage() {
           <button onClick={() => void toggleScan()}>
             {scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
           </button>
-          <button onClick={() => void load(true)}>立即刷新</button>
+          <button disabled={loading} onClick={() => void load({ checkResume: true })}>立即刷新</button>
         </div>
       </header>
       {error ? <div className="alert error">{error}</div> : null}
