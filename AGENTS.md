@@ -210,3 +210,17 @@ When adding a stage, update `check_resume_feasibility()` in `app/pipeline.py` to
 - Volume mounts are required for persistence: `/data`, `/output`, `/models`, `/config`
 - GPU support requires `--gpus all` flag and CUDA 12.6+ compatible drivers
 - For media server integration, mount your media library to `/data` and enable `output_to_source_dir`
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown — issues live as `.scratch/<area>/<date>-<slug>.md` files. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — one `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.

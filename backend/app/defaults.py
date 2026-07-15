@@ -112,5 +112,6 @@ STAGE_SEQUENCE = [
 ]
 
 
+@lru_cache(maxsize=1)
 def copy_default_config() -> dict:
     return deepcopy(DEFAULT_CONFIG)

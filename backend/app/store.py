@@ -102,6 +102,8 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.persistent = persistent
         self._conn = self._create_connection() if persistent else None
+        self._config_cache: dict[str, Any] | None = None
+        self._cache_valid = False
 
     def _create_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
@@ -316,7 +318,7 @@ class Database:
             return
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
-    def get_config(self) -> dict[str, Any]:
+    def _get_config_uncached(self) -> dict[str, Any]:
         defaults = copy_default_config()
         with self.connect() as connection:
             rows = connection.execute(
@@ -339,10 +341,17 @@ class Database:
         defaults["meta"] = {"restart_required": restart_required}
         return defaults
 
+    def get_config(self) -> dict[str, Any]:
+        if self._cache_valid and self._config_cache is not None:
+            return self._config_cache
+        self._config_cache = self._get_config_uncached()
+        self._cache_valid = True
+        return self._config_cache
+
     def update_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         updated_system_key = False
         with self.connect() as connection:
-            current = self.get_config()
+            current = self._get_config_uncached()
             now = utc_now()
             for group_name, group_values in payload.items():
                 if not isinstance(group_values, dict):
@@ -382,6 +391,8 @@ class Database:
                     """,
                     (now,),
                 )
+        self._cache_valid = False
+        return self.get_config()
         return self.get_config()
 
     def recover_orphaned_tasks(self) -> int:

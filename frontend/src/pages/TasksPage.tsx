@@ -97,6 +97,7 @@ export function TasksPage() {
       if (type === 'delete') {
         if (!window.confirm('确认删除该任务?此操作不可恢复(任务记录与日志将一并清除)。')) return
         await deleteTask(taskId)
+        await load({ quiet: true })
       } else if (type === 'cancel') {
         await cancelTask(taskId)
       } else if (type === 'resume') {
@@ -111,11 +112,12 @@ export function TasksPage() {
   }
 
   const toggleScan = async () => {
+    if (scanStatus === null) return
     try {
-      const next = !scanStatus?.scan_enabled
+      const next = !scanStatus.scan_enabled
       const updated = await setScanEnabled(next)
       setScanStatus(updated)
-      await load({ quiet: true }) // scan status changed, refresh task list but skip resume checks
+      await load({ quiet: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '扫描开关切换失败')
     }
@@ -129,12 +131,12 @@ export function TasksPage() {
           <p>轮询刷新当前任务状态、阶段和进度。</p>
         </div>
         <div className="header-actions">
-          <span className={`scan-badge ${scanStatus?.scan_enabled ? 'scan-running' : 'scan-paused'}`}>
-            {scanStatus?.scan_enabled ? '● 扫描运行中' : '○ 扫描已暂停'}
+          <span className={`scan-badge ${scanStatus === null ? 'scan-paused' : scanStatus?.scan_enabled ? 'scan-running' : 'scan-paused'}`}>
+            {scanStatus === null ? '○ 扫描加载中' : scanStatus?.scan_enabled ? '● 扫描运行中' : '○ 扫描已暂停'}
             {scanStatus?.throttled ? ' · 限流中' : ''}
           </span>
-          <button onClick={() => void toggleScan()}>
-            {scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
+          <button disabled={scanStatus === null} onClick={() => void toggleScan()}>
+            {scanStatus === null ? '加载中' : scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
           </button>
           <button disabled={loading} onClick={() => void load({ checkResume: true })}>立即刷新</button>
         </div>
