@@ -429,8 +429,14 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str):
-            candidate = frontend_dist / full_path
-            if full_path and candidate.exists() and candidate.is_file():
+            # 防 path traversal:resolve 后必须仍在 frontend_dist 内,否则 404
+            resolved_root = frontend_dist.resolve()
+            candidate = (frontend_dist / full_path).resolve()
+            try:
+                candidate.relative_to(resolved_root)
+            except ValueError:
+                raise HTTPException(status_code=404, detail="not found")
+            if full_path and candidate.is_file():
                 return FileResponse(candidate)
             index_path = frontend_dist / "index.html"
             if index_path.exists():
