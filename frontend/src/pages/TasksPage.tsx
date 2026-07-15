@@ -76,7 +76,7 @@ export function TasksPage() {
     }
   }, [activeTab, currentPage])
 
-  usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage])
+  // usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage])
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
   const visiblePages = useMemo(() => getVisiblePages(currentPage, totalPages), [currentPage, totalPages])
