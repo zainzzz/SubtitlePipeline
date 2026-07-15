@@ -189,10 +189,15 @@ export function TasksPage() {
             {data.items.map((task) => (
               <tr key={task.id} onClick={() => navigate(`/tasks/${task.id}`)}>
                 <td>{task.id}</td>
-                <td className="task-file">{task.file_path}</td>
-                <td>{task.status}</td>
+                <td className="task-file" title={task.file_path}>{task.file_path}</td>
+                <td><span className={`status-badge status-${task.status}`}>{task.status}</span></td>
                 <td>{task.stage}</td>
-                <td>{task.progress}%</td>
+                <td>
+                  <div className="progress-cell">
+                    <div className="progress-bar"><div style={{ width: `${task.progress}%` }} /></div>
+                    <span className="muted">{task.progress}%</span>
+                  </div>
+                </td>
                 <td>{new Date(task.updated_at).toLocaleString()}</td>
                 <td className="actions-cell wrap">
                   {['failed', 'cancelled', 'done'].includes(task.status) ? (

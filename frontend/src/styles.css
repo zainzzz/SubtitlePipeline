@@ -156,6 +156,56 @@ textarea {
   flex-wrap: wrap;
 }
 
+.status-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status-failed { background: #fef2f2; color: #dc2626; }
+.status-done { background: #f0fdf4; color: #16a34a; }
+.status-processing { background: #eff6ff; color: #2563eb; }
+.status-pending { background: #f1f5f9; color: #64748b; }
+.status-cancelled { background: #f8fafc; color: #94a3b8; }
+
+.scan-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.scan-running { background: #f0fdf4; color: #16a34a; }
+.scan-paused { background: #f1f5f9; color: #64748b; }
+
+.progress-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.progress-bar {
+  width: 80px;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-bar > div {
+  height: 100%;
+  background: #2563eb;
+  border-radius: 3px;
+}
+
+.task-file {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .task-toolbar,
 .tab-row {
   display: grid;
