@@ -300,12 +300,18 @@ def parse_numbered_lines(
     return None
 
 
+def strip_think(content: str) -> str:
+    """去掉思考模型(如 MiniMax-M2 / DeepSeek-R1)的 <think>...</think> 块,避免污染解析。"""
+    return re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+
+
 def parse_chunk_output(
     raw_output: str,
     expected_ids: list[int],
     source_texts: list[str],
     json_array_parser=None,
 ) -> list[str]:
+    raw_output = strip_think(raw_output)
     numbered = parse_numbered_lines(raw_output, expected_ids, source_texts)
     if numbered is not None:
         return numbered
