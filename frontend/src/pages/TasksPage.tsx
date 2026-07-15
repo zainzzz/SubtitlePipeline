@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { cancelTask, checkResumeFeasibility, getTasks, ResumeCheckResponse, retryTask, TaskListResponse } from '../api'
+import { cancelTask, checkResumeFeasibility, deleteTask, getTasks, ResumeCheckResponse, retryTask, TaskListResponse } from '../api'
 import { usePolling } from '../hooks'
 
 const PAGE_SIZE = 20
@@ -81,9 +81,12 @@ export function TasksPage() {
     setCurrentPage(1)
   }
 
-  const handleAction = async (taskId: number, type: 'cancel' | 'restart' | 'resume') => {
+  const handleAction = async (taskId: number, type: 'cancel' | 'restart' | 'resume' | 'delete') => {
     try {
-      if (type === 'cancel') {
+      if (type === 'delete') {
+        if (!window.confirm('确认删除该任务?此操作不可恢复(任务记录与日志将一并清除)。')) return
+        await deleteTask(taskId)
+      } else if (type === 'cancel') {
         await cancelTask(taskId)
       } else if (type === 'resume') {
         await retryTask(taskId, 'resume')
@@ -191,6 +194,14 @@ export function TasksPage() {
                           {resumeChecks[task.id] && !resumeChecks[task.id].can_resume ? <span className="muted">中间文件缺失</span> : null}
                         </>
                       ) : null}
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleAction(task.id, 'delete')
+                        }}
+                      >
+                        删除
+                      </button>
                     </>
                   ) : null}
                   {task.status === 'processing' ? (

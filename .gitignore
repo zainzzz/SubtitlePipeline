@@ -42,3 +42,10 @@ Thumbs.db
 .claude/settings.local.json
 
 doc/
+
+# 本地工具链配置(OMC/Ruflo/claude-flow 等,非项目代码,不入库)
+.claude/
+.claude-flow/
+.omc/
+.spec-workflow/
+.idea/

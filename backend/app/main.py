@@ -212,6 +212,13 @@ def create_app() -> FastAPI:
             cancel_requested=bool(task["cancel_requested"]),
         )
 
+    @app.delete("/api/tasks/{task_id}")
+    def delete_task(task_id: int) -> dict[str, Any]:
+        database = get_database(app)
+        if not database.delete_task(task_id):
+            raise HTTPException(status_code=404, detail="task not found")
+        return {"deleted": task_id}
+
     @app.get("/api/tasks/{task_id}/resume-check")
     def get_resume_check(task_id: int) -> dict[str, Any]:
         database = get_database(app)
@@ -397,6 +404,17 @@ def create_app() -> FastAPI:
         database = get_database(app)
         result = ScannerService(database).scan_once()
         return ScanResponse(scanned=result.scanned, queued=result.queued, skipped=result.skipped)
+
+    @app.get("/api/admin/scans/status")
+    def get_scan_status() -> dict[str, Any]:
+        database = get_database(app)
+        config = database.get_config()
+        status = database.get_scan_status()
+        return {
+            **status,
+            "scan_enabled": bool(config["file"].get("scan_enabled", True)),
+            "pending_count": database.count_tasks_by_status("pending"),
+        }
 
     @app.post("/api/admin/work/run-next")
     def run_next_task() -> dict[str, bool]:

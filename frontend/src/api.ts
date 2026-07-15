@@ -89,6 +89,10 @@ export type AppConfig = {
     scan_interval_seconds: number
     min_size_mb: number
     max_size_mb: number
+    exclude_dirs: string[]
+    input_dirs: string[]
+    scan_enabled: boolean
+    max_pending_tasks: number
   }
   processing: {
     max_retries: number
@@ -283,6 +287,10 @@ export const defaultAppConfig: AppConfig = {
     scan_interval_seconds: 5,
     min_size_mb: 1,
     max_size_mb: 4096,
+    exclude_dirs: [],
+    input_dirs: [],
+    scan_enabled: true,
+    max_pending_tasks: 100,
   },
   processing: {
     max_retries: 1,
@@ -404,6 +412,10 @@ export function retryTask(taskId: number, mode: RetryMode): Promise<void> {
 
 export function cancelTask(taskId: number): Promise<void> {
   return request<void>(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
+}
+
+export function deleteTask(taskId: number): Promise<void> {
+  return request<void>(`/api/tasks/${taskId}`, { method: 'DELETE' })
 }
 
 export function getConfig(): Promise<AppConfig> {

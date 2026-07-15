@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import time
@@ -64,6 +65,11 @@ def _is_inside_directory(path: Path, directory: Path) -> bool:
 def _should_skip_scan_path(path: Path, config: dict[str, Any]) -> bool:
     if ".subpipeline" in path.parts:
         return True
+    exclude_dirs = config.get("file", {}).get("exclude_dirs") or []
+    if exclude_dirs and any(
+        fnmatch.fnmatch(part, pattern) for part in path.parts for pattern in exclude_dirs
+    ):
+        return True
     if not bool(config.get("file", {}).get("output_to_source_dir", True)):
         output_dir = Path(os.environ.get("SUBPIPELINE_OUTPUT_DIR", "/output"))
         if _is_inside_directory(path, output_dir):
@@ -100,17 +106,40 @@ class ScannerService:
     def scan_once(self) -> ScanResult:
         config = self.database.get_config()
         file_config = config["file"]
-        input_dir = Path(file_config["input_dir"])
-        input_dir.mkdir(parents=True, exist_ok=True)
+        roots = [Path(p) for p in (file_config.get("input_dirs") or [])] or [Path(file_config["input_dir"])]
+        for root in roots:
+            root.mkdir(parents=True, exist_ok=True)
         allowed = {extension.lower() for extension in file_config.get("allowed_extensions", [])} or VIDEO_EXTENSIONS
         min_size_bytes = int(file_config["min_size_mb"]) * 1024 * 1024
         max_size_bytes = int(file_config["max_size_mb"]) * 1024 * 1024
+        max_pending_tasks = int(file_config.get("max_pending_tasks", 100))
         pending_count = self.database.count_tasks_by_status("pending")
+        # backpressure: pending 堆积过多则本轮跳过入队，等 worker 消化后再扫
+        if pending_count >= max_pending_tasks:
+            logger.info(
+                "backpressure: pending=%d >= max_pending_tasks=%d，本轮跳过扫描",
+                pending_count, max_pending_tasks,
+            )
+            self.database.record_scan_result({
+                "scanned": 0, "queued": 0, "skipped": 0,
+                "pending_count": pending_count, "throttled": True,
+            })
+            return ScanResult(
+                scanned=0, queued=0, skipped=0,
+                pending_count=pending_count, remaining_slots=0, throttled=True,
+            )
         scanned = 0
         queued = 0
         skipped = 0
-        # 收集所有文件，按文件夹创建时间（新→旧）和路径深度（外→内）排序
-        all_files = [p for p in input_dir.rglob("*") if p.is_file()]
+        throttled = False
+        # 收集所有 root 的文件（支持多文件夹扫描），按文件夹创建时间（新→旧）和深度（外→内）排序
+        root_of: dict[str, Path] = {}
+        all_files: list[Path] = []
+        for root in roots:
+            for p in root.rglob("*"):
+                if p.is_file():
+                    all_files.append(p)
+                    root_of[str(p)] = root
 
         @lru_cache(maxsize=None)
         def _dir_ctime(d: str) -> float:
@@ -119,10 +148,9 @@ class ScannerService:
             except OSError:
                 return 0.0
 
-        input_depth = len(input_dir.parts)
-
         def _sort_key(p: Path):
-            depth = len(p.parts) - input_depth - 1          # 外层优先 (小 → 大)
+            root = root_of[str(p)]
+            depth = len(p.parts) - len(root.parts) - 1     # 外层优先 (小 → 大)
             parent_ctime = _dir_ctime(str(p.parent))        # 新建优先 (大 → 小)
             return (depth, -parent_ctime, p.name)
 
@@ -133,6 +161,10 @@ class ScannerService:
                 continue
             if path.suffix.lower() not in allowed:
                 continue
+            # backpressure: 单次扫描途中 pending+queued 达阈值则停止入队,剩余文件下轮再扫
+            if pending_count + queued >= max_pending_tasks:
+                throttled = True
+                break
             scanned += 1
             stat = path.stat()
             observed = self.database.observe_file(str(path), int(stat.st_size), float(stat.st_mtime))
@@ -164,20 +196,29 @@ class ScannerService:
                 parent_dir_ctime,
             )
             queued += 1
+        self.database.record_scan_result({
+            "scanned": scanned, "queued": queued, "skipped": skipped,
+            "pending_count": pending_count, "throttled": throttled,
+        })
         return ScanResult(
             scanned=scanned,
             queued=queued,
             skipped=skipped,
             pending_count=pending_count,
             remaining_slots=0,
-            throttled=False,
+            throttled=throttled,
         )
 
     def run_forever(self) -> None:
         while True:
+            file_config = self.database.get_config()["file"]
+            interval = max(int(file_config["scan_interval_seconds"]), 1)
             if not self.database.is_setup_complete():
-                interval = int(self.database.get_config()["file"]["scan_interval_seconds"])
-                time.sleep(max(interval, 1))
+                time.sleep(interval)
+                continue
+            if not file_config.get("scan_enabled", True):
+                logger.info("扫描已暂停 (scan_enabled=False)，等待恢复")
+                time.sleep(interval)
                 continue
             result = self.scan_once()
             logger.info(

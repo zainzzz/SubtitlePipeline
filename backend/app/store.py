@@ -205,6 +205,17 @@ class Database:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (source_hash, target_language, llm_type, model, content_type, custom_prompt_hash)
                 );
+
+                CREATE TABLE IF NOT EXISTS scan_status (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_scan_at TEXT,
+                    scanned INTEGER NOT NULL DEFAULT 0,
+                    queued INTEGER NOT NULL DEFAULT 0,
+                    skipped INTEGER NOT NULL DEFAULT 0,
+                    pending_count INTEGER NOT NULL DEFAULT 0,
+                    throttled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(connection, "tasks", "source_size_bytes", "INTEGER NOT NULL DEFAULT 0")
@@ -725,6 +736,53 @@ class Database:
                 ),
             )
 
+    def record_scan_result(self, result: dict[str, Any]) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scan_status
+                    (id, last_scan_at, scanned, queued, skipped, pending_count, throttled, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    last_scan_at = excluded.last_scan_at,
+                    scanned = excluded.scanned,
+                    queued = excluded.queued,
+                    skipped = excluded.skipped,
+                    pending_count = excluded.pending_count,
+                    throttled = excluded.throttled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    now,
+                    int(result.get("scanned", 0)),
+                    int(result.get("queued", 0)),
+                    int(result.get("skipped", 0)),
+                    int(result.get("pending_count", 0)),
+                    1 if result.get("throttled") else 0,
+                    now,
+                ),
+            )
+
+    def get_scan_status(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT last_scan_at, scanned, queued, skipped, pending_count, throttled
+                FROM scan_status WHERE id = 1
+                """
+            ).fetchone()
+        if row is None:
+            return {"last_scan_at": None}
+        return {
+            "last_scan_at": row["last_scan_at"],
+            "scanned": row["scanned"],
+            "queued": row["queued"],
+            "skipped": row["skipped"],
+            "pending_count": row["pending_count"],
+            "throttled": bool(row["throttled"]),
+        }
+
     def has_active_task(self, path_key: str) -> bool:
         with self.connect() as connection:
             row = connection.execute(
@@ -943,6 +1001,12 @@ class Database:
         if updated is None:
             raise RuntimeError("failed to reload task after failure")
         return updated
+
+    def delete_task(self, task_id: int) -> bool:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM task_logs WHERE task_id = ?", (task_id,))
+            cursor = connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return cursor.rowcount > 0
 
     def is_cancel_requested(self, task_id: int) -> bool:
         with self.connect() as connection:
