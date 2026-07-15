@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { cancelTask, checkResumeFeasibility, deleteTask, getTasks, ResumeCheckResponse, retryTask, TaskListResponse } from '../api'
+import { cancelTask, checkResumeFeasibility, deleteTask, getConfig, getScanStatus, getTasks, ResumeCheckResponse, retryTask, ScanStatus, TaskListResponse, updateConfig } from '../api'
 import { usePolling } from '../hooks'
 
 const PAGE_SIZE = 20
@@ -36,6 +36,7 @@ export function TasksPage() {
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState<TaskTab>('all')
   const [currentPage, setCurrentPage] = useState(1)
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const navigate = useNavigate()
 
   const load = useCallback(async () => {
@@ -43,6 +44,11 @@ export function TasksPage() {
     try {
       const nextData = await getTasks(activeTab === 'all' ? undefined : activeTab, currentPage, PAGE_SIZE)
       setData(nextData)
+      try {
+        setScanStatus(await getScanStatus())
+      } catch {
+        // 扫描状态可选,忽略错误
+      }
       const failedTasks = nextData.items.filter((task) => task.status === 'failed')
       if (failedTasks.length > 0) {
         const checkEntries = await Promise.all(
@@ -99,6 +105,16 @@ export function TasksPage() {
     }
   }
 
+  const toggleScan = async () => {
+    try {
+      const cfg = await getConfig()
+      await updateConfig({ file: { ...cfg.file, scan_enabled: !cfg.file.scan_enabled } })
+      setScanStatus(await getScanStatus())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '扫描开关切换失败')
+    }
+  }
+
   return (
     <section>
       <header className="page-header">
@@ -106,7 +122,16 @@ export function TasksPage() {
           <h1>任务列表</h1>
           <p>轮询刷新当前任务状态、阶段和进度。</p>
         </div>
-        <button onClick={() => void load()}>立即刷新</button>
+        <div className="header-actions">
+          <span className="muted">
+            扫描:{scanStatus?.scan_enabled ? '运行中' : '已暂停'}
+            {scanStatus?.throttled ? '(限流)' : ''}
+          </span>
+          <button onClick={() => void toggleScan()}>
+            {scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
+          </button>
+          <button onClick={() => void load()}>立即刷新</button>
+        </div>
       </header>
       {error ? <div className="alert error">{error}</div> : null}
       <div className="card">
@@ -195,6 +220,7 @@ export function TasksPage() {
                         </>
                       ) : null}
                       <button
+                        className="danger"
                         onClick={(event) => {
                           event.stopPropagation()
                           void handleAction(task.id, 'delete')

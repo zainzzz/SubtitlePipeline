@@ -429,6 +429,20 @@ export function updateConfig(config: Partial<AppConfig>): Promise<AppConfig> {
   })
 }
 
+export interface ScanStatus {
+  last_scan_at: string | null
+  scanned: number
+  queued: number
+  skipped: number
+  pending_count: number
+  throttled: boolean
+  scan_enabled: boolean
+}
+
+export function getScanStatus(): Promise<ScanStatus> {
+  return request<ScanStatus>('/api/admin/scans/status')
+}
+
 export function browseDirectory(path?: string): Promise<BrowseDirectoryResponse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : ''
   return request<BrowseDirectoryResponse>(`/api/browse${query}`)
