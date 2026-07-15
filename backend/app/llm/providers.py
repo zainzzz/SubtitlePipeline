@@ -126,6 +126,8 @@ class OpenAICompatibleLLMClient(LLMClient):
         if self.requires_api_key and not self.api_key:
             raise LLMError("translation.api_key 未配置，无法调用 OpenAI-compatible 翻译服务")
         try:
+            # MiniMax M2 等思考模型:reasoning_split=True 把 <think> 分离到 reasoning_details,content 字段干净
+            extra_body = {"reasoning_split": True} if "minimaxi" in self.api_base_url else None
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": item.role, "content": item.content} for item in messages],
@@ -134,6 +136,7 @@ class OpenAICompatibleLLMClient(LLMClient):
                 temperature=0.3,
                 frequency_penalty=1.2,
                 presence_penalty=0.8,
+                extra_body=extra_body,
             )
             parts: list[str] = []
             finish_reason: str | None = None
