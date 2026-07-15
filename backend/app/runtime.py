@@ -131,6 +131,7 @@ class ScannerService:
         scanned = 0
         queued = 0
         skipped = 0
+        throttled = False
         # 收集所有 root 的文件（支持多文件夹扫描），按文件夹创建时间（新→旧）和深度（外→内）排序
         root_of: dict[str, Path] = {}
         all_files: list[Path] = []
@@ -160,6 +161,10 @@ class ScannerService:
                 continue
             if path.suffix.lower() not in allowed:
                 continue
+            # backpressure: 单次扫描途中 pending+queued 达阈值则停止入队,剩余文件下轮再扫
+            if pending_count + queued >= max_pending_tasks:
+                throttled = True
+                break
             scanned += 1
             stat = path.stat()
             observed = self.database.observe_file(str(path), int(stat.st_size), float(stat.st_mtime))
@@ -193,7 +198,7 @@ class ScannerService:
             queued += 1
         self.database.record_scan_result({
             "scanned": scanned, "queued": queued, "skipped": skipped,
-            "pending_count": pending_count, "throttled": False,
+            "pending_count": pending_count, "throttled": throttled,
         })
         return ScanResult(
             scanned=scanned,
@@ -201,7 +206,7 @@ class ScannerService:
             skipped=skipped,
             pending_count=pending_count,
             remaining_slots=0,
-            throttled=False,
+            throttled=throttled,
         )
 
     def run_forever(self) -> None:
