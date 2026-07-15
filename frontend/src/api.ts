@@ -443,6 +443,13 @@ export function getScanStatus(): Promise<ScanStatus> {
   return request<ScanStatus>('/api/admin/scans/status')
 }
 
+export function setScanEnabled(enabled: boolean): Promise<ScanStatus> {
+  return request<ScanStatus>('/api/admin/scans/status', {
+    method: 'PATCH',
+    body: JSON.stringify({ scan_enabled: enabled }),
+  })
+}
+
 export function browseDirectory(path?: string): Promise<BrowseDirectoryResponse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : ''
   return request<BrowseDirectoryResponse>(`/api/browse${query}`)

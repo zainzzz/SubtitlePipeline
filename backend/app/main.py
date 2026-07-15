@@ -416,6 +416,16 @@ def create_app() -> FastAPI:
             "pending_count": database.count_tasks_by_status("pending"),
         }
 
+    @app.patch("/api/admin/scans/status")
+    def toggle_scan_status(request: dict[str, bool]) -> dict[str, Any]:
+        """Toggle or set scan_enabled state directly, bypassing full config merge."""
+        database = get_database(app)
+        scan_enabled = request.get("scan_enabled")
+        if scan_enabled is None:
+            raise HTTPException(status_code=400, detail="scan_enabled is required")
+        database.update_config({"file": {"scan_enabled": scan_enabled}})
+        return get_scan_status()
+
     @app.post("/api/admin/work/run-next")
     def run_next_task() -> dict[str, bool]:
         database = get_database(app)

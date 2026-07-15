@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { cancelTask, checkResumeFeasibility, deleteTask, getConfig, getScanStatus, getTasks, ResumeCheckResponse, retryTask, ScanStatus, TaskListResponse, updateConfig } from '../api'
+import { cancelTask, checkResumeFeasibility, deleteTask, getScanStatus, getTasks, ResumeCheckResponse, retryTask, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
 import { usePolling } from '../hooks'
 
 const PAGE_SIZE = 20
@@ -112,9 +112,9 @@ export function TasksPage() {
 
   const toggleScan = async () => {
     try {
-      const cfg = await getConfig()
-      await updateConfig({ file: { ...cfg.file, scan_enabled: !cfg.file.scan_enabled } })
-      setScanStatus(await getScanStatus())
+      const next = !scanStatus?.scan_enabled
+      const updated = await setScanEnabled(next)
+      setScanStatus(updated)
       await load({ quiet: true }) // scan status changed, refresh task list but skip resume checks
     } catch (err) {
       setError(err instanceof Error ? err.message : '扫描开关切换失败')
