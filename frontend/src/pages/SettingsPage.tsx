@@ -18,7 +18,7 @@ import {
   updateConfig,
 } from '../api'
 import { DirectoryPicker } from '../components/DirectoryPicker'
-import { countChangedSections, getAlignStatus, getTranslationStatus, StepCard, StepTone, TagEditor } from '../components/SettingsWidgets'
+import { addToList, countChangedSections, getAlignStatus, getTranslationStatus, removeFromList, StepCard, StepTone, TagEditor } from '../components/SettingsWidgets'
 
 type GroupName = 'file' | 'processing' | 'whisper' | 'translation' | 'subtitle' | 'mux' | 'logging'
 
@@ -110,57 +110,25 @@ export function SettingsPage() {
     }))
   }
 
-  const addFileExtension = (value: string) => {
-    const list = [...config.file.allowed_extensions]
-    if (!list.includes(value)) {
-      setField('file', 'allowed_extensions', [...list, value])
-    }
-  }
+  const addFileExtension = (value: string) =>
+    setField('file', 'allowed_extensions', addToList(config.file.allowed_extensions, value))
+  const removeFileExtension = (value: string) =>
+    setField('file', 'allowed_extensions', removeFromList(config.file.allowed_extensions, value))
 
-  const removeFileExtension = (value: string) => {
-    setField(
-      'file',
-      'allowed_extensions',
-      config.file.allowed_extensions.filter((item) => item !== value),
-    )
-  }
+  const addInputDir = (value: string) =>
+    setField('file', 'input_dirs', addToList(config.file.input_dirs, value))
+  const removeInputDir = (value: string) =>
+    setField('file', 'input_dirs', removeFromList(config.file.input_dirs, value))
 
-  const addInputDir = (value: string) => {
-    const list = [...config.file.input_dirs]
-    if (!list.includes(value)) {
-      setField('file', 'input_dirs', [...list, value])
-    }
-  }
+  const addExcludeDir = (value: string) =>
+    setField('file', 'exclude_dirs', addToList(config.file.exclude_dirs, value))
+  const removeExcludeDir = (value: string) =>
+    setField('file', 'exclude_dirs', removeFromList(config.file.exclude_dirs, value))
 
-  const removeInputDir = (value: string) => {
-    setField('file', 'input_dirs', config.file.input_dirs.filter((item) => item !== value))
-  }
-
-  const addExcludeDir = (value: string) => {
-    const list = [...config.file.exclude_dirs]
-    if (!list.includes(value)) {
-      setField('file', 'exclude_dirs', [...list, value])
-    }
-  }
-
-  const removeExcludeDir = (value: string) => {
-    setField('file', 'exclude_dirs', config.file.exclude_dirs.filter((item) => item !== value))
-  }
-
-  const addTargetLanguage = (value: string) => {
-    const list = [...config.translation.target_languages]
-    if (!list.includes(value)) {
-      setField('translation', 'target_languages', [...list, value])
-    }
-  }
-
-  const removeTargetLanguage = (value: string) => {
-    setField(
-      'translation',
-      'target_languages',
-      config.translation.target_languages.filter((item) => item !== value),
-    )
-  }
+  const addTargetLanguage = (value: string) =>
+    setField('translation', 'target_languages', addToList(config.translation.target_languages, value))
+  const removeTargetLanguage = (value: string) =>
+    setField('translation', 'target_languages', removeFromList(config.translation.target_languages, value))
 
   const installedAsrModels = useMemo(
     () => models.items.filter((item) => item.model_type === 'asr' && item.status === 'installed'),

@@ -187,3 +187,9 @@ export function getAlignStatus(
   }
   return { tone: 'neutral', label: '自动模式' }
 }
+
+export const addToList = (list: string[], value: string): string[] =>
+  list.includes(value) ? list : [...list, value]
+
+export const removeFromList = (list: string[], value: string): string[] =>
+  list.filter((item) => item !== value)

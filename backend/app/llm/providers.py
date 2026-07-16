@@ -9,6 +9,10 @@ from typing import Any
 import openai
 from openai import OpenAI
 
+# 思考类模型(如 MiniMax M2)需 reasoning_split 把 <think> 分离到 reasoning_details,
+# 避免 <think> 污染 content 字段。按 base_url host 识别,新增厂商改这里。
+REASONING_SPLIT_HOSTS = ("minimaxi",)
+
 
 SUPPORTED_LLM_TYPES = {
     "openai-chat": {
@@ -122,12 +126,15 @@ class OpenAICompatibleLLMClient(LLMClient):
             return self.api_base_url
         return f"{self.api_base_url}/v1"
 
+    def needs_reasoning_split(self) -> bool:
+        return any(host in self.api_base_url for host in REASONING_SPLIT_HOSTS)
+
     def complete(self, messages: list[LLMMessage]) -> str:
         if self.requires_api_key and not self.api_key:
             raise LLMError("translation.api_key 未配置，无法调用 OpenAI-compatible 翻译服务")
         try:
             # MiniMax M2 等思考模型:reasoning_split=True 把 <think> 分离到 reasoning_details,content 字段干净
-            extra_body = {"reasoning_split": True} if "minimaxi" in self.api_base_url else None
+            extra_body = {"reasoning_split": True} if self.needs_reasoning_split() else None
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": item.role, "content": item.content} for item in messages],
