@@ -49,3 +49,8 @@ doc/
 .omc/
 .spec-workflow/
 .idea/
+
+# 本地测试/技能产物,不入库
+.playwright-mcp/
+.agents/
+skills-lock.json
