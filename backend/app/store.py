@@ -104,6 +104,7 @@ class Database:
         self._conn = self._create_connection() if persistent else None
         self._config_cache: dict[str, Any] | None = None
         self._cache_valid = False
+        self._cached_config_version: int | None = None
 
     def _create_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
@@ -298,6 +299,14 @@ class Database:
                 """,
                 (now,),
             )
+            connection.execute(
+                """
+                INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
+                VALUES ('system', 'config_version', '0', 'system', 0, ?)
+                ON CONFLICT(group_name, key_name) DO NOTHING
+                """,
+                (now,),
+            )
 
     def _build_result_affecting_snapshot(self, config: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -312,7 +321,11 @@ class Database:
         config = self.get_config()
         return Path(config["processing"]["work_dir"]) / str(task_id)
 
+    _ALLOWED_TABLE_NAMES = frozenset({"tasks", "files", "task_logs"})
+
     def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+        if table_name not in self._ALLOWED_TABLE_NAMES:
+            raise ValueError(f"unexpected table name for _ensure_column: {table_name!r}")
         columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         if any(column["name"] == column_name for column in columns):
             return
@@ -341,11 +354,68 @@ class Database:
         defaults["meta"] = {"restart_required": restart_required}
         return defaults
 
+    def _get_config_version(self) -> int:
+        """Read the config version from DB for cross-process cache invalidation.
+
+        Returns 0 if the version row does not exist yet (e.g. pre-migration DB).
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT value_json
+                FROM system_config
+                WHERE group_name = 'system' AND key_name = 'config_version'
+                """
+            ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(json.loads(row["value_json"]))
+        except (ValueError, TypeError):
+            return 0
+
+    def _bump_config_version(self, connection: sqlite3.Connection) -> int:
+        """Atomically increment and return the new config version."""
+        connection.execute(
+            """
+            INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
+            VALUES ('system', 'config_version', '0', 'system', 0, ?)
+            ON CONFLICT(group_name, key_name) DO NOTHING
+            """,
+            (utc_now(),),
+        )
+        connection.execute(
+            """
+            UPDATE system_config
+            SET value_json = CAST(CAST(value_json AS INTEGER) + 1 AS TEXT),
+                updated_at = ?
+            WHERE group_name = 'system' AND key_name = 'config_version'
+            """,
+            (utc_now(),),
+        )
+        row = connection.execute(
+            """
+            SELECT value_json
+            FROM system_config
+            WHERE group_name = 'system' AND key_name = 'config_version'
+            """
+        ).fetchone()
+        try:
+            return int(json.loads(row["value_json"])) if row else 0
+        except (ValueError, TypeError):
+            return 0
+
     def get_config(self) -> dict[str, Any]:
-        if self._cache_valid and self._config_cache is not None:
+        current_version = self._get_config_version()
+        if (
+            self._cache_valid
+            and self._config_cache is not None
+            and self._cached_config_version == current_version
+        ):
             return self._config_cache
         self._config_cache = self._get_config_uncached()
         self._cache_valid = True
+        self._cached_config_version = current_version
         return self._config_cache
 
     def update_config(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -391,6 +461,7 @@ class Database:
                     """,
                     (now,),
                 )
+            self._bump_config_version(connection)
         self._cache_valid = False
         return self.get_config()
 
@@ -821,6 +892,128 @@ class Database:
             ).fetchone()
         return row is not None
 
+    # -- Batch helpers (used by ScannerService.scan_once to eliminate N+1 queries) --
+
+    _SQL_PARAM_CHUNK = 500
+
+    @staticmethod
+    def _chunk(seq: list[str], size: int) -> Iterator[list[str]]:
+        for i in range(0, len(seq), size):
+            yield seq[i : i + size]
+
+    def observe_files_batch(self, files: list[tuple[str, int, float]]) -> list[dict[str, Any]]:
+        """Batch version of observe_file — observes all files in a single transaction.
+
+        Returns a list of observed-file dicts in the same order as the input.
+        """
+        if not files:
+            return []
+        now = utc_now()
+        entries: list[dict[str, Any]] = []
+        for file_path, size_bytes, mtime in files:
+            path_key = normalize_path(file_path)
+            entries.append(
+                {
+                    "path": file_path,
+                    "path_key": path_key,
+                    "size_bytes": int(size_bytes),
+                    "mtime": float(mtime),
+                }
+            )
+        results: list[dict[str, Any]] = []
+        with self.connect() as connection:
+            existing_map: dict[str, Any] = {}
+            for chunk in self._chunk([e["path_key"] for e in entries], self._SQL_PARAM_CHUNK):
+                placeholders = ",".join("?" * len(chunk))
+                rows = connection.execute(
+                    f"""
+                    SELECT id, path_key, size_bytes, mtime, stable_hits
+                    FROM files
+                    WHERE path_key IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    existing_map[row["path_key"]] = row
+            for entry in entries:
+                existing = existing_map.get(entry["path_key"])
+                if existing:
+                    matches = (
+                        existing["size_bytes"] == entry["size_bytes"]
+                        and float(existing["mtime"]) == float(entry["mtime"])
+                    )
+                    stable_hits = int(existing["stable_hits"]) + 1 if matches else 1
+                    connection.execute(
+                        """
+                        UPDATE files
+                        SET path = ?, size_bytes = ?, mtime = ?, stable_hits = ?, last_seen_at = ?
+                        WHERE path_key = ?
+                        """,
+                        (entry["path"], entry["size_bytes"], entry["mtime"], stable_hits, now, entry["path_key"]),
+                    )
+                    file_id = existing["id"]
+                else:
+                    stable_hits = 1
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO files (path, path_key, size_bytes, mtime, stable_hits, first_seen_at, last_seen_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (entry["path"], entry["path_key"], entry["size_bytes"], entry["mtime"], stable_hits, now, now),
+                    )
+                    file_id = cursor.lastrowid
+                results.append(
+                    {
+                        "file_id": file_id,
+                        "path": entry["path"],
+                        "path_key": entry["path_key"],
+                        "size_bytes": entry["size_bytes"],
+                        "mtime": entry["mtime"],
+                        "stable_hits": stable_hits,
+                    }
+                )
+        return results
+
+    def get_active_task_path_keys(self, path_keys: list[str]) -> set[str]:
+        """Batch version of has_active_task — returns the set of path_keys that have active tasks."""
+        if not path_keys:
+            return set()
+        result: set[str] = set()
+        with self.connect() as connection:
+            for chunk in self._chunk(path_keys, self._SQL_PARAM_CHUNK):
+                placeholders = ",".join("?" * len(chunk))
+                rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT file_path_key
+                    FROM tasks
+                    WHERE file_path_key IN ({placeholders})
+                      AND status IN ('pending', 'processing')
+                    """,
+                    chunk,
+                ).fetchall()
+                result.update(row["file_path_key"] for row in rows)
+        return result
+
+    def get_existing_task_versions(self, path_keys: list[str]) -> set[tuple[str, int, float]]:
+        """Batch version of has_task_for_file_version — returns (path_key, size, mtime) tuples."""
+        if not path_keys:
+            return set()
+        result: set[tuple[str, int, float]] = set()
+        with self.connect() as connection:
+            for chunk in self._chunk(path_keys, self._SQL_PARAM_CHUNK):
+                placeholders = ",".join("?" * len(chunk))
+                rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT file_path_key, source_size_bytes, source_mtime
+                    FROM tasks
+                    WHERE file_path_key IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    result.add((row["file_path_key"], int(row["source_size_bytes"]), float(row["source_mtime"])))
+        return result
+
     def create_task(self, file_id: int, file_path: str, size_bytes: int, mtime: float, parent_dir_ctime: float = 0.0) -> dict[str, Any]:
         config = self.get_config()
         now = utc_now()
@@ -938,7 +1131,7 @@ class Database:
                 UPDATE tasks
                 SET status = 'cancelled',
                     stage = ?,
-                    progress = progress,
+                    progress = 0,
                     error_message = ?,
                     updated_at = ?,
                     finished_at = ?
