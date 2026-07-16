@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { browseDirectory, BrowseDirectoryResponse } from '../api'
 
@@ -15,6 +15,9 @@ function getInitialPath(value: string) {
   return trimmed || undefined
 }
 
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+
 export function DirectoryPicker({
   value,
   onChange,
@@ -27,6 +30,8 @@ export function DirectoryPicker({
   const [error, setError] = useState('')
   const [browser, setBrowser] = useState<BrowseDirectoryResponse | null>(null)
   const initialPath = useMemo(() => getInitialPath(value), [value])
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const previouslyFocused = useRef<HTMLElement | null>(null)
 
   const load = async (path?: string) => {
     setLoading(true)
@@ -48,6 +53,56 @@ export function DirectoryPicker({
     void load(initialPath)
   }, [initialPath, open])
 
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+    previouslyFocused.current = document.activeElement as HTMLElement
+    const dialog = dialogRef.current
+    if (!dialog) {
+      return
+    }
+    const firstFocusable = dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
+    firstFocusable?.focus()
+
+    return () => {
+      previouslyFocused.current?.focus()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpen(false)
+      return
+    }
+    if (event.key === 'Tab') {
+      const dialog = dialogRef.current
+      if (!dialog) {
+        return
+      }
+      const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      if (focusables.length === 0) {
+        return
+      }
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      const active = document.activeElement as HTMLElement
+      if (event.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          event.preventDefault()
+          last.focus()
+        }
+      } else {
+        if (active === last) {
+          event.preventDefault()
+          first.focus()
+        }
+      }
+    }
+  }
+
   return (
     <div className="directory-picker">
       {label ? <span>{label}</span> : null}
@@ -58,11 +113,18 @@ export function DirectoryPicker({
         </button>
       </div>
       {open ? (
-        <div className="dialog-backdrop" role="presentation">
-          <div className="dialog-card">
+        <div className="dialog-backdrop">
+          <div
+            ref={dialogRef}
+            className="dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="directory-picker-title"
+            onKeyDown={handleDialogKeyDown}
+          >
             <div className="card-header">
               <div>
-                <h3>选择目录</h3>
+                <h3 id="directory-picker-title">选择目录</h3>
                 <p className="muted">{browser?.current || '加载中…'}</p>
               </div>
               <button type="button" className="text-button" onClick={() => setOpen(false)}>
