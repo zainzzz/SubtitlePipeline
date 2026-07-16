@@ -156,32 +156,60 @@ class ScannerService:
 
         all_files.sort(key=_sort_key)
 
+        # Phase 1: Collect candidates (extension + skip filtering, in-memory)
+        candidates: list[Path] = []
         for path in all_files:
             if _should_skip_scan_path(path, config):
                 continue
             if path.suffix.lower() not in allowed:
                 continue
-            # backpressure: 单次扫描途中 pending+queued 达阈值则停止入队,剩余文件下轮再扫
+            candidates.append(path)
+
+        if not candidates:
+            self.database.record_scan_result({
+                "scanned": 0, "queued": 0, "skipped": 0,
+                "pending_count": pending_count, "throttled": throttled,
+            })
+            return ScanResult(
+                scanned=0, queued=0, skipped=0,
+                pending_count=pending_count, remaining_slots=0, throttled=throttled,
+            )
+
+        # Phase 2: Stat all candidates
+        candidate_stats: list[tuple[Path, int, float]] = []
+        for path in candidates:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            candidate_stats.append((path, int(stat.st_size), float(stat.st_mtime)))
+
+        # Phase 3: Batch observe all candidates (single DB transaction)
+        observed_list = self.database.observe_files_batch(
+            [(str(path), size, mtime) for path, size, mtime in candidate_stats]
+        )
+
+        # Phase 4: Batch query dedup for all observed files (2 constant DB queries)
+        all_path_keys = [obs["path_key"] for obs in observed_list]
+        active_task_keys = self.database.get_active_task_path_keys(all_path_keys)
+        existing_task_versions = self.database.get_existing_task_versions(all_path_keys)
+
+        # Phase 5: Single loop with backpressure + remaining filters + task creation
+        for (path, _size, _mtime), observed in zip(candidate_stats, observed_list):
             if pending_count + queued >= max_pending_tasks:
                 throttled = True
                 break
             scanned += 1
-            stat = path.stat()
-            observed = self.database.observe_file(str(path), int(stat.st_size), float(stat.st_mtime))
             if observed["size_bytes"] < min_size_bytes or observed["size_bytes"] > max_size_bytes:
                 skipped += 1
                 continue
             if observed["stable_hits"] < 2:
                 skipped += 1
                 continue
-            if self.database.has_task_for_file_version(
-                observed["path_key"],
-                observed["size_bytes"],
-                observed["mtime"],
-            ):
+            if (observed["path_key"], observed["size_bytes"], observed["mtime"]) in existing_task_versions:
                 skipped += 1
                 continue
-            if self.database.has_active_task(observed["path_key"]):
+            if observed["path_key"] in active_task_keys:
                 skipped += 1
                 continue
             if _has_existing_target_subtitle(path, config):
