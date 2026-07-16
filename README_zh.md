@@ -135,15 +135,19 @@ SubtitlePipeline 专为配合流媒体服务器使用而设计。默认情况下
 
 ### 环境变量
 
-| 变量 | 用途 |
-|------|------|
-| `SUBPIPELINE_DB_PATH` | SQLite 数据库路径 |
-| `SUBPIPELINE_MODELS_DIR` | 模型存储目录 |
-| `SUBPIPELINE_OUTPUT_DIR` | 默认输出目录 |
-| `SUBPIPELINE_BROWSE_ROOTS` | 目录浏览器允许的根目录 |
-| `SUBPIPELINE_FRONTEND_DIST` | 前端构建产物路径 |
-| `HTTP_PROXY` / `HTTPS_PROXY` | 网络代理 |
-| `HF_ENDPOINT` | HuggingFace 镜像端点 |
+| 变量 | 用途 | 默认值 |
+|------|------|--------|
+| `SUBPIPELINE_DB_PATH` | SQLite 数据库路径 | `/config/subpipeline.db` |
+| `SUBPIPELINE_MODELS_DIR` | 模型存储目录 | `/models` |
+| `SUBPIPELINE_OUTPUT_DIR` | 默认输出目录 | `/output` |
+| `SUBPIPELINE_BROWSE_ROOTS` | 目录浏览器允许的根目录 | `/data,/output,/config` |
+| `SUBPIPELINE_FRONTEND_DIST` | 前端构建产物路径 | `<repo>/frontend/dist` |
+| `SUBPIPELINE_HOST` | API 服务监听地址 | `0.0.0.0` |
+| `SUBPIPELINE_PORT` | API 服务端口 | `8000` |
+| `SUBPIPELINE_API_TOKEN` | 写操作接口（POST/PUT/PATCH/DELETE）所需的 Bearer Token，未设置则不启用鉴权 | _未设置_ |
+| `SUBPIPELINE_ALLOWED_ORIGINS` | CORS 允许的来源（逗号分隔） | `http://localhost:8000` |
+| `HTTP_PROXY` / `HTTPS_PROXY` | 模型下载网络代理 | - |
+| `HF_ENDPOINT` | HuggingFace 镜像端点 | - |
 
 ## 本地开发
 

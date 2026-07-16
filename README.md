@@ -135,15 +135,19 @@ Built-in prompt presets for different content types:
 
 ### Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `SUBPIPELINE_DB_PATH` | SQLite database path |
-| `SUBPIPELINE_MODELS_DIR` | Model storage directory |
-| `SUBPIPELINE_OUTPUT_DIR` | Default output directory |
-| `SUBPIPELINE_BROWSE_ROOTS` | Allowed directories for browser |
-| `SUBPIPELINE_FRONTEND_DIST` | Frontend dist path |
-| `HTTP_PROXY` / `HTTPS_PROXY` | Network proxy |
-| `HF_ENDPOINT` | HuggingFace mirror endpoint |
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SUBPIPELINE_DB_PATH` | SQLite database path | `/config/subpipeline.db` |
+| `SUBPIPELINE_MODELS_DIR` | Model storage directory | `/models` |
+| `SUBPIPELINE_OUTPUT_DIR` | Default output directory | `/output` |
+| `SUBPIPELINE_BROWSE_ROOTS` | Allowed directories for browser | `/data,/output,/config` |
+| `SUBPIPELINE_FRONTEND_DIST` | Frontend dist path | `<repo>/frontend/dist` |
+| `SUBPIPELINE_HOST` | API server bind address | `0.0.0.0` |
+| `SUBPIPELINE_PORT` | API server port | `8000` |
+| `SUBPIPELINE_API_TOKEN` | Bearer token required for mutating API endpoints (POST/PUT/PATCH/DELETE). Unset = no auth. | _unset_ |
+| `SUBPIPELINE_ALLOWED_ORIGINS` | Comma-separated CORS allowed origins | `http://localhost:8000` |
+| `HTTP_PROXY` / `HTTPS_PROXY` | Network proxy for model downloads | - |
+| `HF_ENDPOINT` | HuggingFace mirror endpoint | - |
 
 ## Local Development
 
