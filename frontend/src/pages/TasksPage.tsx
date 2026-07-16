@@ -182,16 +182,16 @@ export function TasksPage() {
             </button>
           </div>
         </div>
-        <table className="task-table">
+        <table className="task-table" aria-label="任务列表">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>文件</th>
-              <th>状态</th>
-              <th>阶段</th>
-              <th>进度</th>
-              <th>更新时间</th>
-              <th>操作</th>
+              <th scope="col">ID</th>
+              <th scope="col">文件</th>
+              <th scope="col">状态</th>
+              <th scope="col">阶段</th>
+              <th scope="col">进度</th>
+              <th scope="col">更新时间</th>
+              <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -212,6 +212,7 @@ export function TasksPage() {
                   {['failed', 'cancelled', 'done'].includes(task.status) ? (
                     <>
                       <button
+                        aria-label={`重新执行 任务 ${task.id}`}
                         onClick={(event) => {
                           event.stopPropagation()
                           void handleAction(task.id, 'restart')
@@ -222,6 +223,7 @@ export function TasksPage() {
                       {task.status === 'failed' ? (
                         <>
                           <button
+                            aria-label={`继续执行 任务 ${task.id}`}
                             disabled={!resumeChecks[task.id]?.can_resume}
                             onClick={(event) => {
                               event.stopPropagation()
@@ -234,6 +236,7 @@ export function TasksPage() {
                         </>
                       ) : null}
                       <button
+                        aria-label={`删除 任务 ${task.id}`}
                         className="danger"
                         onClick={(event) => {
                           event.stopPropagation()
@@ -246,6 +249,7 @@ export function TasksPage() {
                   ) : null}
                   {task.status === 'processing' ? (
                     <button
+                      aria-label={`取消 任务 ${task.id}`}
                       onClick={(event) => {
                         event.stopPropagation()
                         void handleAction(task.id, 'cancel')

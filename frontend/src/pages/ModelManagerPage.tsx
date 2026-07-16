@@ -226,18 +226,21 @@ export function ModelManagerPage() {
               ) : null}
               <div className="actions-cell wrap">
                 <button
+                  aria-label={`下载 模型 ${item.name}`}
                   disabled={item.status !== 'not_installed' || busyModel === item.name}
                   onClick={() => void runAction(item, 'download')}
                 >
                   下载
                 </button>
                 <button
+                  aria-label={`切换 模型 ${item.name}`}
                   disabled={item.model_type !== 'asr' || item.status !== 'installed' || item.current || busyModel === item.name}
                   onClick={() => void runAction(item, 'activate')}
                 >
                   切换
                 </button>
                 <button
+                  aria-label={`删除 模型 ${item.name}`}
                   disabled={item.status !== 'installed' || item.current || busyModel === item.name}
                   onClick={() => void runAction(item, 'delete')}
                 >
