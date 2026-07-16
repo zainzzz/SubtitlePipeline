@@ -12,6 +12,36 @@ SubtitlePipeline is a self-hosted subtitle generation pipeline that automaticall
 - ASR: WhisperX, Faster-Whisper, Anime-Whisper, Qwen-ASR
 - Deployment: Docker, Supervisor (multi-process orchestration)
 
+## Runtime & Testing Environment (强制约束)
+
+**所有测试与运行必须在 Docker 容器内进行,禁止在本机直接跑 python / npm dev / backend 服务。**
+
+测试容器(本机自建 arm64):
+- 镜像: `subpipeline:local`
+- 容器名: `subpipeline-local`
+- mount: `./backend`、`./frontend/dist`、`./data`、`./output`、`./models`、`./config`
+
+```bash
+# 启动/重启(加载后端新代码必须重启,Python 进程不热重载)
+docker restart subpipeline-local
+
+# 后端单元测试
+docker exec subpipeline-local python -m unittest discover backend/tests
+
+# 看日志(api_server / scanner / worker 三进程)
+docker logs -f subpipeline-local
+
+# 进入容器
+docker exec -it subpipeline-local bash
+
+# 验证 API 健康
+curl -s http://localhost:8000/api/system/status
+```
+
+注意:
+- 后端改动需 `docker restart subpipeline-local` 生效;前端改动本机 `npm run build` 后 `frontend/dist` 被 mount,容器直接服务,浏览器需硬刷新。
+- **提交前必须在容器内实测验证**(API 往返 / UI 交互 / 单测),不得只凭 `npm run build` 或 `py_compile` 通过就声称完成。
+
 ## Development Commands
 
 ### Backend
