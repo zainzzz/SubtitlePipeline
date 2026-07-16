@@ -506,3 +506,12 @@ export function deleteModel(name: string): Promise<{ message: string }> {
 export function activateModel(name: string): Promise<{ message: string; config: AppConfig }> {
   return request<{ message: string; config: AppConfig }>(`/api/models/${name}/activate`, { method: 'POST' })
 }
+
+// Server-Sent Events (SSE)
+
+export const eventStreamUrl = '/api/events/stream'
+
+export type EventStream<T = Record<string, unknown>> = {
+  type: string
+  data: T
+}

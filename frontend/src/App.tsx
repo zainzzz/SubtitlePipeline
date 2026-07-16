@@ -1,12 +1,19 @@
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { getSystemStatus, SystemStatus } from './api'
+import { useEventStream } from './hooks'
 import { ModelManagerPage } from './pages/ModelManagerPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SetupWizard } from './pages/SetupWizard'
 import { TaskDetailPage } from './pages/TaskDetailPage'
 import { TasksPage } from './pages/TasksPage'
+
+type SseEvent = { type: string; data: unknown; ts: number }
+type EventContextValue = { events: SseEvent[]; lastEvent: SseEvent | null }
+
+const EventContext = createContext<EventContextValue>({ events: [], lastEvent: null })
+export const useSseEvents = () => useContext(EventContext)
 
 function SidebarLayout() {
   return (
@@ -43,6 +50,14 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const location = useLocation()
+
+  const [events, setEvents] = useState<SseEvent[]>([])
+  useEventStream((type, data) => {
+    setEvents((prev) => {
+      const next = [...prev, { type, data, ts: Date.now() }]
+      return next.length > 200 ? next.slice(-200) : next
+    })
+  })
 
   const loadStatus = async () => {
     setLoading(true)
@@ -90,5 +105,10 @@ export default function App() {
     return <Navigate to="/" replace />
   }
 
-  return <SidebarLayout />
+  const ctx: EventContextValue = { events, lastEvent: events.length ? events[events.length - 1] : null }
+  return (
+    <EventContext.Provider value={ctx}>
+      <SidebarLayout />
+    </EventContext.Provider>
+  )
 }
