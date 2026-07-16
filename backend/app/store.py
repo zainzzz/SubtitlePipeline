@@ -393,7 +393,6 @@ class Database:
                 )
         self._cache_valid = False
         return self.get_config()
-        return self.get_config()
 
     def recover_orphaned_tasks(self) -> int:
         """Reset tasks stuck in 'processing' (e.g. after a crash) to 'failed' so users can retry."""
