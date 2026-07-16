@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..model_manager import (
     DEFAULT_PROVIDER,
@@ -14,9 +14,12 @@ from .cache import WhisperModelCache
 from .factory import ASRProviderFactory
 from .helpers import normalize_asr_segments
 
+if TYPE_CHECKING:
+    from ..pipeline import TaskContext
+
 
 def run_asr(
-    context: Any,
+    context: TaskContext,
     audio_path: Path,
     model_cache: WhisperModelCache | None = None,
     database: Any = None,

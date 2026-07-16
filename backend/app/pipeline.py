@@ -1174,8 +1174,8 @@ def mux_subtitle(context: TaskContext, subtitle_paths: list[str]) -> str:
     return str(output_path)
 
 
-def _required_resume_files(task: dict[str, Any], context: TaskContext) -> list[tuple[str, Path]]:
-    stage = normalize_stage_name(str(task["stage"]))
+def _required_resume_files(resume_stage: str, context: TaskContext) -> list[tuple[str, Path]]:
+    stage = normalize_stage_name(resume_stage)
     translation_enabled = bool(context.config_snapshot["translation"]["enabled"])
     audio_format = str(context.config_snapshot["whisper"]["audio_format"]).strip().lower()
     files: list[tuple[str, Path]] = []
@@ -1246,7 +1246,7 @@ def check_resume_feasibility(task: dict[str, Any]) -> dict[str, Any]:
     )
     resume_stage = _infer_resume_stage(str(task["stage"]), context)
     missing: list[str] = []
-    files = _required_resume_files({"stage": resume_stage}, context)
+    files = _required_resume_files(resume_stage, context)
     for name, path in files:
         if not path.exists():
             missing.append(name)
