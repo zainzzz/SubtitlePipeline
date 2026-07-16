@@ -5,12 +5,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
+from .auth import require_token_for_mutation
+from .defaults import get_allowed_origins
+from .events import event_stream
 from .logging_utils import setup_logging
 from .model_manager import (
     DEFAULT_PROVIDER,
@@ -143,19 +147,41 @@ def get_model_manager(app: FastAPI) -> ModelManager:
     return app.state.model_manager
 
 
+async def events_stream_response(request: Request) -> EventSourceResponse:
+    """SSE endpoint as a callable for tests.
+
+    Emits: task.updated, task.deleted, scan.progress, model.download_progress events.
+    Clients should connect with EventSource API. Disconnect automatically closes the stream.
+    """
+
+    async def event_generator():
+        async for event_type, data in event_stream():
+            if await request.is_disconnected():
+                break
+            yield {"event": event_type, "data": data}
+
+    return EventSourceResponse(event_generator())
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="SubPipeline", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=get_allowed_origins(),
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
     frontend_dist = resolve_frontend_dist()
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/events/stream")
+    async def events_stream(request: Request):
+        """Server-Sent Events stream for real-time updates."""
+        return await events_stream_response(request)
 
     @app.get("/api/tasks")
     def list_tasks(
@@ -181,7 +207,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="task not found")
         return task
 
-    @app.post("/api/tasks/{task_id}/cancel", response_model=TaskActionResponse)
+    @app.post("/api/tasks/{task_id}/cancel", response_model=TaskActionResponse, dependencies=[Depends(require_token_for_mutation)])
     def cancel_task(task_id: int) -> TaskActionResponse:
         database = get_database(app)
         task = database.request_cancel(task_id)
@@ -195,7 +221,7 @@ def create_app() -> FastAPI:
             cancel_requested=bool(task["cancel_requested"]),
         )
 
-    @app.post("/api/tasks/{task_id}/retry", response_model=TaskActionResponse)
+    @app.post("/api/tasks/{task_id}/retry", response_model=TaskActionResponse, dependencies=[Depends(require_token_for_mutation)])
     def retry_task(task_id: int, request: RetryRequest) -> TaskActionResponse:
         database = get_database(app)
         try:
@@ -212,7 +238,7 @@ def create_app() -> FastAPI:
             cancel_requested=bool(task["cancel_requested"]),
         )
 
-    @app.delete("/api/tasks/{task_id}")
+    @app.delete("/api/tasks/{task_id}", dependencies=[Depends(require_token_for_mutation)])
     def delete_task(task_id: int) -> dict[str, Any]:
         database = get_database(app)
         if not database.delete_task(task_id):
@@ -250,7 +276,7 @@ def create_app() -> FastAPI:
         database = get_database(app)
         return database.get_config()
 
-    @app.put("/api/config")
+    @app.put("/api/config", dependencies=[Depends(require_token_for_mutation)])
     def update_config(request: ConfigUpdateRequest) -> dict[str, Any]:
         database = get_database(app)
         payload = request.model_dump(exclude_none=True)
@@ -293,7 +319,7 @@ def create_app() -> FastAPI:
             "proxy": get_proxy_status(),
         }
 
-    @app.post("/api/system/setup-complete")
+    @app.post("/api/system/setup-complete", dependencies=[Depends(require_token_for_mutation)])
     def set_setup_complete(request: SetupCompleteRequest) -> dict[str, Any]:
         database = get_database(app)
         updated = database.set_setup_complete(request.setup_complete)
@@ -312,7 +338,7 @@ def create_app() -> FastAPI:
             "proxy": get_proxy_status(),
         }
 
-    @app.post("/api/translation/test")
+    @app.post("/api/translation/test", dependencies=[Depends(require_token_for_mutation)])
     def test_translation(request: TranslationTestRequest) -> dict[str, Any]:
         if not request.enabled:
             return {"success": True, "message": "翻译已禁用，跳过连接测试"}
@@ -353,7 +379,7 @@ def create_app() -> FastAPI:
             "providers": PROVIDER_INFO,
         }
 
-    @app.post("/api/models/{name}/download", status_code=202)
+    @app.post("/api/models/{name}/download", status_code=202, dependencies=[Depends(require_token_for_mutation)])
     def download_model(name: str) -> dict[str, str]:
         model_manager = get_model_manager(app)
         try:
@@ -364,7 +390,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"message": f"模型 {name} 下载已启动"}
 
-    @app.delete("/api/models/{name}")
+    @app.delete("/api/models/{name}", dependencies=[Depends(require_token_for_mutation)])
     def delete_model(name: str) -> dict[str, str]:
         database = get_database(app)
         model_manager = get_model_manager(app)
@@ -382,7 +408,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"message": f"模型 {name} 已删除"}
 
-    @app.post("/api/models/{name}/activate")
+    @app.post("/api/models/{name}/activate", dependencies=[Depends(require_token_for_mutation)])
     def activate_model(name: str) -> dict[str, Any]:
         database = get_database(app)
         model_manager = get_model_manager(app)
@@ -399,7 +425,7 @@ def create_app() -> FastAPI:
             "config": updated,
         }
 
-    @app.post("/api/admin/scans/run", response_model=ScanResponse)
+    @app.post("/api/admin/scans/run", response_model=ScanResponse, dependencies=[Depends(require_token_for_mutation)])
     def run_scan_once() -> ScanResponse:
         database = get_database(app)
         result = ScannerService(database).scan_once()
@@ -416,7 +442,7 @@ def create_app() -> FastAPI:
             "pending_count": database.count_tasks_by_status("pending"),
         }
 
-    @app.patch("/api/admin/scans/status")
+    @app.patch("/api/admin/scans/status", dependencies=[Depends(require_token_for_mutation)])
     def toggle_scan_status(request: dict[str, bool]) -> dict[str, Any]:
         """Toggle or set scan_enabled state directly, bypassing full config merge."""
         database = get_database(app)
@@ -426,7 +452,7 @@ def create_app() -> FastAPI:
         database.update_config({"file": {"scan_enabled": scan_enabled}})
         return get_scan_status()
 
-    @app.post("/api/admin/work/run-next")
+    @app.post("/api/admin/work/run-next", dependencies=[Depends(require_token_for_mutation)])
     def run_next_task() -> dict[str, bool]:
         database = get_database(app)
         processed = WorkerService(database).process_next_task()

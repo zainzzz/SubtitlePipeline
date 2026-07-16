@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -12,12 +13,27 @@ from typing import Any, Iterator
 logger = logging.getLogger(__name__)
 
 from .defaults import RESULT_AFFECTING_GROUPS, SYSTEM_LEVEL_FIELDS, copy_default_config, detect_device
+from .events import emit, task_to_event_payload
 from .pipeline import (
     check_resume_feasibility,
     cleanup_intermediates,
     cleanup_work_dir_intermediates,
     normalize_stage_name,
 )
+
+
+def _fire_event(event_type: str, payload: dict[str, Any]) -> None:
+    """Fire-and-forget event emission. Safe to call from sync code.
+
+    Schedules :func:`emit` on the running event loop without blocking. If no
+    loop is running (e.g. CLI scripts or synchronous tests), the event is
+    silently skipped rather than raising.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(emit(event_type, payload))
 
 
 OBSOLETE_CONFIG_FIELDS = {
@@ -671,7 +687,10 @@ class Database:
                 """,
                 (utc_now(), task_id),
             )
-        return self.get_task(task_id)
+        task = self.get_task(task_id)
+        if task is not None:
+            _fire_event("task.updated", task_to_event_payload(task))
+        return task
 
     def request_retry(self, task_id: int, mode: str = "restart") -> dict[str, Any] | None:
         if mode not in {"restart", "resume"}:
@@ -711,7 +730,10 @@ class Database:
                     task_id,
                 ),
             )
-        return self.get_task(task_id)
+        task = self.get_task(task_id)
+        if task is not None:
+            _fire_event("task.updated", task_to_event_payload(task))
+        return task
 
     def observe_file(self, file_path: str, size_bytes: int, mtime: float) -> dict[str, Any]:
         path_key = normalize_path(file_path)
@@ -1045,6 +1067,7 @@ class Database:
         task = self.get_task(task_id)
         if task is None:
             raise RuntimeError("failed to load created task")
+        _fire_event("task.updated", task_to_event_payload(task))
         return task
 
     def claim_next_pending_task(self) -> dict[str, Any] | None:
@@ -1089,6 +1112,7 @@ class Database:
         task = self.get_task(task_id)
         if task is None:
             raise RuntimeError("failed to claim pending task")
+        _fire_event("task.updated", task_to_event_payload(task))
         return task
 
     def update_task_stage(self, task_id: int, stage: str, progress: float, status: str = "processing") -> None:
@@ -1122,6 +1146,9 @@ class Database:
                 (final_stage, json.dumps(result_payload), now, now, task_id),
             )
         self.log(task_id, final_stage, "INFO", "任务处理完成", result_payload)
+        updated = self.get_task(task_id)
+        if updated is not None:
+            _fire_event("task.updated", task_to_event_payload(updated))
 
     def mark_task_cancelled(self, task_id: int, stage: str, message: str = "任务已取消") -> None:
         now = utc_now()
@@ -1140,6 +1167,9 @@ class Database:
                 (stage, message, now, now, task_id),
             )
         self.log(task_id, stage, "WARNING", message)
+        updated = self.get_task(task_id)
+        if updated is not None:
+            _fire_event("task.updated", task_to_event_payload(updated))
 
     def mark_task_failure(self, task_id: int, stage: str, message: str) -> dict[str, Any]:
         task = self.get_task(task_id)
@@ -1203,13 +1233,17 @@ class Database:
         updated = self.get_task(task_id)
         if updated is None:
             raise RuntimeError("failed to reload task after failure")
+        _fire_event("task.updated", task_to_event_payload(updated))
         return updated
 
     def delete_task(self, task_id: int) -> bool:
         with self.connect() as connection:
             connection.execute("DELETE FROM task_logs WHERE task_id = ?", (task_id,))
             cursor = connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if deleted:
+            _fire_event("task.deleted", {"id": task_id})
+        return deleted
 
     def is_cancel_requested(self, task_id: int) -> bool:
         with self.connect() as connection:
