@@ -28,7 +28,8 @@ RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/re
 
 COPY --chown=app:appgroup backend /app/backend
 COPY --chown=app:appgroup --from=frontend-build /app/frontend/dist /app/frontend/dist
-COPY container/supervisord.conf /etc/supervisor/conf.d/subpipeline.conf
+COPY --chown=app:appgroup container/supervisord.conf /etc/supervisor/conf.d/subpipeline.conf
+RUN chown -R app:appgroup /app/backend /app/frontend
 
 EXPOSE 8000
 VOLUME ["/data", "/output", "/models", "/config"]

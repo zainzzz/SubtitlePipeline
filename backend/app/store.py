@@ -340,10 +340,16 @@ class Database:
     _ALLOWED_TABLE_NAMES = frozenset({"tasks", "files", "task_logs"})
 
     def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+        import re
         if table_name not in self._ALLOWED_TABLE_NAMES:
             raise ValueError(f"unexpected table name for _ensure_column: {table_name!r}")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column_name):
+            raise ValueError(f"unexpected column name for _ensure_column: {column_name!r}")
+        if not re.fullmatch(r"[A-Za-z0-9 ()'_]*", definition):
+            raise ValueError(f"unexpected column definition for _ensure_column: {definition!r}")
+        # PRAGMA table_info column index 1 is the name (sqlite3.Row agnostic).
         columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-        if any(column["name"] == column_name for column in columns):
+        if any(column[1] == column_name for column in columns):
             return
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
