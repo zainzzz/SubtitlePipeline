@@ -14,20 +14,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SUBPIPELINE_PORT=8000
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends supervisor ffmpeg \
+    && apt-get install -y --no-install-recommends supervisor ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin app
 
 WORKDIR /app
 COPY backend/requirements.txt /app/backend/requirements.txt
 ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements.txt \
-    && mkdir -p /data /output /models /config
+    && mkdir -p /data /output /models /config \
+    && chown -R app:appgroup /data /output /models /config
 
-COPY backend /app/backend
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+COPY --chown=app:appgroup backend /app/backend
+COPY --chown=app:appgroup --from=frontend-build /app/frontend/dist /app/frontend/dist
 COPY container/supervisord.conf /etc/supervisor/conf.d/subpipeline.conf
 
 EXPOSE 8000
 VOLUME ["/data", "/output", "/models", "/config"]
+
+USER app
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/subpipeline.conf"]

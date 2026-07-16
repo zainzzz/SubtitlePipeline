@@ -8,6 +8,12 @@ COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.json fro
 COPY frontend/src ./src
 RUN npm ci && npm run build
 
+# Runtime stage uses the CUDA "runtime" Ubuntu image (not "devel"). The runtime
+# flavour ships the CUDA driver shim and libraries needed at inference time but
+# omits nvcc / headers. This keeps the final image smaller. If a future GPU
+# dependency requires compilation against CUDA headers during pip install,
+# insert a temporary "devel" builder stage (e.g. nvidia/cuda:12.6.1-devel-ubuntu22.04)
+# to build the wheel, then copy the wheel into the runtime stage.
 FROM nvidia/cuda:12.6.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -18,21 +24,27 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SUBPIPELINE_PORT=8000
 
 RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends python3 python3-pip python3-venv libpython3.10 supervisor ffmpeg curl ca-certificates \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        python3 python3-pip python3-venv libpython3.10 supervisor ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin app
 
 WORKDIR /app
 COPY backend/requirements-gpu.txt /app/backend/requirements-gpu.txt
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && python3 -m pip install --no-cache-dir "numpy<2" \
     && python3 -m pip install --no-cache-dir --no-build-isolation -r /app/backend/requirements-gpu.txt \
-    && mkdir -p /data /output /models /config
+    && mkdir -p /data /output /models /config \
+    && chown -R app:appgroup /data /output /models /config
 
-COPY backend /app/backend
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+COPY --chown=app:appgroup backend /app/backend
+COPY --chown=app:appgroup --from=frontend-build /app/frontend/dist /app/frontend/dist
 COPY container/supervisord.conf /etc/supervisor/conf.d/subpipeline.conf
 
 EXPOSE 8000
 VOLUME ["/data", "/output", "/models", "/config"]
+
+USER app
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/subpipeline.conf"]
