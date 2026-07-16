@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 import logging
+import os
 from copy import deepcopy
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+
+# --- CORS configuration -----------------------------------------------------
+# Override at runtime via SUBPIPELINE_ALLOWED_ORIGINS (comma-separated,
+# e.g. "https://media.example.com,http://localhost:3000").
+DEFAULT_ALLOWED_ORIGINS = ["http://localhost:8000"]
+
+
+@lru_cache(maxsize=1)
+def get_allowed_origins() -> list[str]:
+    """Allowed CORS origins, parsed from SUBPIPELINE_ALLOWED_ORIGINS or the default."""
+    raw = os.environ.get("SUBPIPELINE_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return list(DEFAULT_ALLOWED_ORIGINS)
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins or list(DEFAULT_ALLOWED_ORIGINS)
 
 
 @lru_cache(maxsize=1)
