@@ -352,7 +352,7 @@ export const defaultAppConfig: AppConfig = {
   },
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function sendRequest(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(path, {
     headers: {
       'Content-Type': 'application/json',
@@ -374,10 +374,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(message || '请求失败')
   }
-  if (response.status === 204) {
-    return undefined as T
-  }
+  return response
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await sendRequest(path, init)
   return response.json() as Promise<T>
+}
+
+async function requestMaybeEmpty<T>(path: string, init?: RequestInit): Promise<T | undefined> {
+  const response = await sendRequest(path, init)
+  if (response.status === 204) {
+    return undefined
+  }
+  const text = await response.text()
+  if (!text) {
+    return undefined
+  }
+  return JSON.parse(text) as T
 }
 
 export function cloneConfig(config: AppConfig): AppConfig {
@@ -404,18 +418,18 @@ export function getTaskLogs(taskId: string, page: number): Promise<LogResponse> 
 }
 
 export function retryTask(taskId: number, mode: RetryMode): Promise<void> {
-  return request<void>(`/api/tasks/${taskId}/retry`, {
+  return requestMaybeEmpty<void>(`/api/tasks/${taskId}/retry`, {
     method: 'POST',
     body: JSON.stringify({ mode }),
   })
 }
 
 export function cancelTask(taskId: number): Promise<void> {
-  return request<void>(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
+  return requestMaybeEmpty<void>(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
 }
 
 export function deleteTask(taskId: number): Promise<void> {
-  return request<void>(`/api/tasks/${taskId}`, { method: 'DELETE' })
+  return requestMaybeEmpty<void>(`/api/tasks/${taskId}`, { method: 'DELETE' })
 }
 
 export function getConfig(): Promise<AppConfig> {
