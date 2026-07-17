@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -79,6 +80,34 @@ def get_proxy_status() -> dict[str, str | None]:
         "https_proxy": os.environ.get("HTTPS_PROXY"),
         "hf_endpoint": os.environ.get("HF_ENDPOINT"),
     }
+
+
+_SENSITIVE_CONFIG_KEYS = frozenset({"api_key", "secret", "password", "token"})
+
+
+def _redact_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of *config* with known sensitive values replaced.
+
+    Recursively walks dicts and lists. A non-empty sensitive value becomes
+    ``"***"``; an empty/None sensitive value is preserved as-is (so the
+    frontend can distinguish "not set" from "set but hidden").
+    """
+    redacted = copy.deepcopy(config)
+    _redact_in_place(redacted)
+    return redacted
+
+
+def _redact_in_place(node: Any) -> None:
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if key in _SENSITIVE_CONFIG_KEYS:
+                if value:
+                    node[key] = "***"
+            else:
+                _redact_in_place(value)
+    elif isinstance(node, list):
+        for item in node:
+            _redact_in_place(item)
 
 
 def resolve_db_path() -> str:
@@ -274,14 +303,14 @@ def create_app() -> FastAPI:
     @app.get("/api/config")
     def get_config() -> dict[str, Any]:
         database = get_database(app)
-        return database.get_config()
+        return _redact_config(database.get_config())
 
     @app.put("/api/config", dependencies=[Depends(require_token_for_mutation)])
     def update_config(request: ConfigUpdateRequest) -> dict[str, Any]:
         database = get_database(app)
         payload = request.model_dump(exclude_none=True)
         try:
-            return database.update_config(payload)
+            return _redact_config(database.update_config(payload))
         except KeyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -422,7 +451,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "message": f"当前模型已切换为 {canonical_name}",
-            "config": updated,
+            "config": _redact_config(updated),
         }
 
     @app.post("/api/admin/scans/run", response_model=ScanResponse, dependencies=[Depends(require_token_for_mutation)])
