@@ -21,6 +21,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -54,20 +55,16 @@ def _make_app_with_db(tmpdir: Path) -> tuple[TestClient, Database]:
         }
     )
 
-    # Patch the lifespan-bound database so the TestClient uses our temp DB.
-    original_lifespan = main_module.lifespan
+    app = create_app()
+    # Bypass lifespan so TestClient cannot overwrite our test DB with a fresh one.
+    app.state.database = db
+    app.state.model_manager = None
 
-    @main_module.asynccontextmanager
-    async def _stub_lifespan(app):  # type: ignore[no-untyped-def]
-        app.state.database = db
-        app.state.model_manager = None  # type: ignore[assignment]
+    @asynccontextmanager
+    async def _noop_lifespan(_app):  # type: ignore[no-untyped-def]
         yield
 
-    main_module.lifespan = _stub_lifespan  # type: ignore[assignment]
-    try:
-        app = create_app()
-    finally:
-        main_module.lifespan = original_lifespan  # type: ignore[assignment]
+    app.router.lifespan_context = _noop_lifespan  # type: ignore[assignment]
 
     client = TestClient(app)
     return client, db
@@ -181,15 +178,27 @@ class TestAuthGating(unittest.TestCase):
 
 class TestSSERoute(unittest.TestCase):
     def test_sse_route_returns_event_source_response(self) -> None:
-        """GET /api/events/stream returns an EventSourceResponse (text/event-stream)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            client, _ = _make_app_with_db(Path(tmp))
-            # We can't fully consume an infinite SSE stream with TestClient,
-            # but we can open it and check the response starts streaming the
-            # right content type. Use stream=True and close immediately.
-            with client.stream("GET", "/api/events/stream") as resp:
-                self.assertEqual(resp.status_code, 200)
-                self.assertIn("text/event-stream", resp.headers.get("content-type", ""))
+        """GET /api/events/stream returns an EventSourceResponse (text/event-stream).
+
+        Invokes ``events_stream_response`` directly with a minimal mock request to
+        avoid consuming the infinite SSE stream through ``TestClient.stream`` (which
+        would hang because the generator never yields ``http.disconnect``).
+        """
+        from starlette.requests import Request as StarletteRequest
+
+        async def _receive() -> dict:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/events/stream",
+            "headers": [],
+            "query_string": b"",
+        }
+        request = StarletteRequest(scope, _receive)
+        response = asyncio.run(events_stream_response(request))
+        self.assertEqual(response.media_type, "text/event-stream")
 
 
 # ---------------------------------------------------------------------------
