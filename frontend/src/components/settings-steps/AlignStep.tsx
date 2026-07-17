@@ -1,15 +1,8 @@
 import { Link } from 'react-router-dom'
 
 import { AlignProvider } from '../../api'
-import { StepCard } from '../SettingsWidgets'
+import { alignProviderOptions, StepCard } from '../SettingsWidgets'
 import { AlignStepProps } from './types'
-
-const alignProviderOptions: Array<{ value: AlignProvider; label: string }> = [
-  { value: 'auto', label: '自动（推荐）' },
-  { value: 'whisperx', label: 'WhisperX 强制对齐' },
-  { value: 'qwen-forced', label: 'Qwen 强制对齐' },
-  { value: 'none', label: '禁用' },
-]
 
 export function AlignStep({
   config,
