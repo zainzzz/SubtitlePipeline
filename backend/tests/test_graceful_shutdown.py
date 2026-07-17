@@ -34,8 +34,8 @@ class TestScannerGracefulShutdown(unittest.TestCase):
         from app import scanner_process
 
         self.assertFalse(scanner_process._should_stop)
-        # Call handler directly (simulates OS signal delivery).
-        scanner_process._handle_signal(signal.SIGTERM, None)
+        with self.assertRaises(scanner_process._GracefulExit):
+            scanner_process._handle_signal(signal.SIGTERM, None)
         self.assertTrue(scanner_process._should_stop)
 
     def test_sigint_sets_should_stop(self) -> None:
@@ -43,7 +43,8 @@ class TestScannerGracefulShutdown(unittest.TestCase):
         from app import scanner_process
 
         self.assertFalse(scanner_process._should_stop)
-        scanner_process._handle_signal(signal.SIGINT, None)
+        with self.assertRaises(scanner_process._GracefulExit):
+            scanner_process._handle_signal(signal.SIGINT, None)
         self.assertTrue(scanner_process._should_stop)
 
     def test_signal_handler_raises_graceful_exit(self) -> None:
@@ -84,7 +85,8 @@ class TestWorkerGracefulShutdown(unittest.TestCase):
         from app import worker_process
 
         self.assertFalse(worker_process._should_stop)
-        worker_process._handle_signal(signal.SIGTERM, None)
+        with self.assertRaises(worker_process._GracefulExit):
+            worker_process._handle_signal(signal.SIGTERM, None)
         self.assertTrue(worker_process._should_stop)
 
     def test_sigint_sets_should_stop(self) -> None:
@@ -92,7 +94,8 @@ class TestWorkerGracefulShutdown(unittest.TestCase):
         from app import worker_process
 
         self.assertFalse(worker_process._should_stop)
-        worker_process._handle_signal(signal.SIGINT, None)
+        with self.assertRaises(worker_process._GracefulExit):
+            worker_process._handle_signal(signal.SIGINT, None)
         self.assertTrue(worker_process._should_stop)
 
     def test_signal_handler_raises_graceful_exit(self) -> None:
@@ -148,8 +151,7 @@ class TestWorkerGracefulShutdown(unittest.TestCase):
 
         # The task that was in progress when the signal was set should complete.
         self.assertGreaterEqual(len(task_completed), 1)
-        # The loop should exit after the current task finishes.
-        self.assertEqual(iterations, 2)
+        self.assertEqual(iterations, 1)
 
 
 class TestEndToEndSignalDelivery(unittest.TestCase):
