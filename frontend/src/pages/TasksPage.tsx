@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { cancelTask, checkResumeFeasibility, deleteTask, getScanStatus, getTasks, ResumeCheckResponse, retryTask, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
 import { usePolling } from '../hooks'
+import { formatDate } from '../utils/datetime'
 
 const PAGE_SIZE = 20
 
@@ -207,7 +208,7 @@ export function TasksPage() {
                     <span className="muted">{task.progress}%</span>
                   </div>
                 </td>
-                <td>{new Date(task.updated_at).toLocaleString()}</td>
+                <td>{formatDate(task.updated_at)}</td>
                 <td className="actions-cell wrap">
                   {['failed', 'cancelled', 'done'].includes(task.status) ? (
                     <>
