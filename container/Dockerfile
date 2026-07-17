@@ -3,7 +3,10 @@ FROM node:22-bookworm AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.json frontend/tsconfig.node.json frontend/vite.config.ts frontend/index.html ./
 COPY frontend/src ./src
-RUN npm ci && npm run build
+# `npm install` (not `npm ci`) so optional platform-specific binaries (e.g.
+# @rollup/rollup-linux-arm64-gnu) resolve on the current platform even when
+# package-lock.json was generated on a different OS.
+RUN npm install --no-audit --no-fund && npm run build
 
 FROM python:3.12-slim-bookworm
 
