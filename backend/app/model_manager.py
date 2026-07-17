@@ -9,6 +9,7 @@ from typing import Any
 
 DOWNLOAD_STALL_TIMEOUT_SECONDS = 120
 DOWNLOAD_PROGRESS_POLL_SECONDS = 3
+DIRECTORY_SIZE_CACHE_TTL_SECONDS = 10
 DEFAULT_PROVIDER = "whisperx"
 PROVIDER_ORDER = ("whisperx", "faster-whisper", "anime-whisper", "qwen")
 PROVIDER_CONFIG_KEYS = {
@@ -244,12 +245,20 @@ def infer_provider_from_model_name(name: str, fallback: str | None = None) -> st
 
 
 class ModelManager:
-    def __init__(self, models_root: str = "/models", stall_timeout_seconds: int = DOWNLOAD_STALL_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        models_root: str = "/models",
+        stall_timeout_seconds: int = DOWNLOAD_STALL_TIMEOUT_SECONDS,
+        directory_size_cache_ttl: float = DIRECTORY_SIZE_CACHE_TTL_SECONDS,
+    ):
         self.models_root = Path(models_root)
         self.models_root.mkdir(parents=True, exist_ok=True)
         self._states: dict[str, DownloadState] = {}
         self._lock = threading.RLock()
         self.stall_timeout_seconds = max(int(stall_timeout_seconds), 1)
+        self._dir_size_cache: dict[str, tuple[float, int]] = {}
+        self._dir_size_cache_lock = threading.Lock()
+        self._dir_size_cache_ttl = max(float(directory_size_cache_ttl), 0.0)
 
     def get_spec(self, name: str, provider: str | None = None) -> ModelSpec:
         canonical_name = resolve_model_name(name, provider)
@@ -321,10 +330,11 @@ class ModelManager:
                 stalled=False,
                 manual_download_url=self._manual_download_url(spec),
                 last_progress_at=now,
-                last_size_bytes=self._directory_size(model_dir),
+                last_size_bytes=self._directory_size(model_dir, use_cache=False),
                 token=token,
             )
         model_dir.mkdir(parents=True, exist_ok=True)
+        self._invalidate_directory_size_cache(model_dir)
         threading.Thread(target=self._download_model, args=(spec, token), daemon=True).start()
         threading.Thread(target=self._watch_download, args=(spec, token), daemon=True).start()
 
@@ -378,7 +388,7 @@ class ModelManager:
         model_dir = self.models_root / spec.name
         while True:
             time.sleep(DOWNLOAD_PROGRESS_POLL_SECONDS)
-            current_size = self._directory_size(model_dir)
+            current_size = self._directory_size(model_dir, use_cache=False)
             now = time.time()
             with self._lock:
                 state = self._states.get(spec.name)
@@ -408,7 +418,7 @@ class ModelManager:
     def _calculate_progress(self, model_dir: Path, estimated_size_bytes: int) -> int:
         if estimated_size_bytes <= 0 or not model_dir.exists():
             return 0
-        current_size = sum(path.stat().st_size for path in model_dir.rglob("*") if path.is_file())
+        current_size = self._directory_size(model_dir)
         if current_size <= 0:
             return 0
         ratio = min(current_size / estimated_size_bytes, 0.99)
@@ -419,10 +429,28 @@ class ModelManager:
             return False
         return any(model_dir.iterdir())
 
-    def _directory_size(self, model_dir: Path) -> int:
+    def _invalidate_directory_size_cache(self, model_dir: Path | None = None) -> None:
+        with self._dir_size_cache_lock:
+            if model_dir is not None:
+                self._dir_size_cache.pop(str(model_dir), None)
+            else:
+                self._dir_size_cache.clear()
+
+    def _directory_size(self, model_dir: Path, use_cache: bool = True) -> int:
         if not model_dir.exists():
             return 0
-        return sum(path.stat().st_size for path in model_dir.rglob("*") if path.is_file())
+        cache_key = str(model_dir)
+        now = time.monotonic()
+        if use_cache and self._dir_size_cache_ttl > 0:
+            with self._dir_size_cache_lock:
+                cached = self._dir_size_cache.get(cache_key)
+                if cached is not None and (now - cached[0]) < self._dir_size_cache_ttl:
+                    return cached[1]
+        total = sum(path.stat().st_size for path in model_dir.rglob("*") if path.is_file())
+        if use_cache and self._dir_size_cache_ttl > 0:
+            with self._dir_size_cache_lock:
+                self._dir_size_cache[cache_key] = (now, total)
+        return total
 
     def _manual_download_url(self, spec: ModelSpec) -> str:
         return f"https://huggingface.co/{spec.repo_id}"
