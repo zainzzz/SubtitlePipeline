@@ -106,6 +106,19 @@ class ScannerService:
     def scan_once(self) -> ScanResult:
         config = self.database.get_config()
         file_config = config["file"]
+        # Guard scan_enabled at scan_once entry so every caller (scanner loop,
+        # /api/admin/scans/run endpoint, future manual triggers) respects it.
+        if not file_config.get("scan_enabled", True):
+            logger.info("scan_once: scan_enabled=False, skipping scan (no tasks will be created)")
+            pending_count = self.database.count_tasks_by_status("pending")
+            self.database.record_scan_result({
+                "scanned": 0, "queued": 0, "skipped": 0,
+                "pending_count": pending_count, "throttled": False,
+            })
+            return ScanResult(
+                scanned=0, queued=0, skipped=0,
+                pending_count=pending_count, remaining_slots=0, throttled=False,
+            )
         roots = [Path(p) for p in (file_config.get("input_dirs") or [])] or [Path(file_config["input_dir"])]
         for root in roots:
             root.mkdir(parents=True, exist_ok=True)
@@ -265,7 +278,20 @@ class ScannerService:
 class WorkerService:
     def __init__(self, database: Database):
         self.database = database
-        self.model_cache = WhisperModelCache()
+        self._model_cache: WhisperModelCache | None = None
+        self._model_cache_warned = False
+
+    @property
+    def model_cache(self) -> WhisperModelCache:
+        if self._model_cache is None:
+            self._model_cache = WhisperModelCache()
+        if not self._model_cache_warned:
+            logger.info(
+                "WorkerService model cache is per-process; "
+                "running multiple workers will load N copies of the model"
+            )
+            self._model_cache_warned = True
+        return self._model_cache
 
     def run_forever(self) -> None:
         while True:
