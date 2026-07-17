@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .exceptions import PipelineError
 from .helpers import get_models_root
+
+if TYPE_CHECKING:
+    import whisperx
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,7 @@ def _resolve_whisperx_compute_type(value: Any) -> str | None:
 
 class WhisperModelCache:
     def __init__(self) -> None:
-        self._model: Any | None = None
+        self._model: whisperx.WhisperModel | None = None
         self._model_name: str | None = None
         self._model_device: str | None = None
         self._model_language: str | None = None
@@ -60,7 +63,13 @@ class WhisperModelCache:
         self._align_language: str | None = None
         self._align_device: str | None = None
 
-    def get_model(self, name: str, device: str, language: str | None = None, compute_type: Any = "auto") -> Any:
+    def get_model(
+        self,
+        name: str,
+        device: str,
+        language: str | None = None,
+        compute_type: Any = "auto",
+    ) -> whisperx.WhisperModel:
         resolved_compute_type = _resolve_whisperx_compute_type(compute_type)
         if (
             self._model is not None
