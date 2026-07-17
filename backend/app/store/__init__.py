@@ -1,3 +1,19 @@
+"""Public surface for the SubtitlePipeline SQLite store.
+
+Split from a single 1260-LOC module into focused submodules:
+- ``app.store`` (this file) — ``Database`` facade: connections, task
+  lifecycle/query, file observation, scan status. Delegates schema bootstrap
+  to ``DatabaseMigrations`` and config CRUD to ``ConfigService``.
+- ``app.store.migrations`` — schema bootstrap + ``_ensure_column``.
+- ``app.store.config`` — config CRUD + in-process cache + version tracking.
+
+Backward compatibility is load-bearing: ``from app.store import Database``
+and every pre-refactor ``Database.xxx()`` method continues to work.
+Cache attrs (``_config_cache``, ``_cache_valid``, ``_cached_config_version``)
+are property proxies over ``ConfigService`` state so tests that mutate
+``database._cached_config_version`` directly still pass.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,48 +28,31 @@ from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
-from .defaults import RESULT_AFFECTING_GROUPS, SYSTEM_LEVEL_FIELDS, copy_default_config, detect_device
-from .events import emit, task_to_event_payload
-from .pipeline import (
+from ..defaults import RESULT_AFFECTING_GROUPS
+from ..events import emit, task_to_event_payload
+from ..pipeline import (
     check_resume_feasibility,
     cleanup_intermediates,
     cleanup_work_dir_intermediates,
     normalize_stage_name,
 )
+from .config import (
+    READ_ONLY_CONFIG_FIELDS,
+    ConfigService,
+    _migrate_whisper_config_dict,
+    _normalize_align_provider,
+    _normalize_legacy_align_method,
+)
+from .migrations import DatabaseMigrations, OBSOLETE_CONFIG_FIELDS
 
 
 def _fire_event(event_type: str, payload: dict[str, Any]) -> None:
-    """Fire-and-forget event emission. Safe to call from sync code.
-
-    Schedules :func:`emit` on the running event loop without blocking. If no
-    loop is running (e.g. CLI scripts or synchronous tests), the event is
-    silently skipped rather than raising.
-    """
+    """Fire-and-forget event emission; no-op when no event loop is running."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
     loop.create_task(emit(event_type, payload))
-
-
-OBSOLETE_CONFIG_FIELDS = {
-    ("file", "in_place"),
-    ("file", "output_dir"),
-    ("processing", "backend_mode"),
-    ("scanner", "max_pending_tasks"),
-    ("translation", "provider"),
-    ("translation", "mock_prefix_template"),
-    ("translation", "fail_languages"),
-    ("subtitle", "text_process_style"),
-    ("whisper", "align_model"),
-    ("whisper", "align_method"),
-    ("mux", "output_dir"),
-    ("logging", "page_size"),
-}
-
-READ_ONLY_CONFIG_FIELDS = {
-    ("whisper", "device"),
-}
 
 
 def utc_now() -> str:
@@ -62,45 +61,6 @@ def utc_now() -> str:
 
 def normalize_path(value: str) -> str:
     return str(Path(value).expanduser().resolve()).lower()
-
-
-def _load_config_value(connection: sqlite3.Connection, group_name: str, key_name: str) -> Any | None:
-    row = connection.execute(
-        """
-        SELECT value_json
-        FROM system_config
-        WHERE group_name = ? AND key_name = ?
-        """,
-        (group_name, key_name),
-    ).fetchone()
-    if row is None:
-        return None
-    return json.loads(row["value_json"])
-
-
-def _normalize_legacy_align_method(value: Any) -> str:
-    normalized = str(value or "auto").strip().lower()
-    legacy_mapping = {
-        "whisperx": "auto",
-        "auto": "auto",
-        "simple": "none",
-        "none": "none",
-    }
-    return legacy_mapping.get(normalized, normalized or "auto")
-
-
-def _normalize_align_provider(value: Any) -> str:
-    normalized = str(value or "auto").strip().lower()
-    supported = {"auto", "whisperx", "qwen-forced", "none"}
-    return normalized if normalized in supported else "auto"
-
-
-def _migrate_whisper_config_dict(whisper_config: dict[str, Any]) -> None:
-    if "align_provider" in whisper_config:
-        whisper_config["align_provider"] = _normalize_align_provider(whisper_config.get("align_provider"))
-    elif "align_method" in whisper_config:
-        whisper_config["align_provider"] = _normalize_legacy_align_method(whisper_config.get("align_method"))
-    whisper_config.pop("align_method", None)
 
 
 @dataclass
@@ -113,14 +73,22 @@ class PageResult:
 
 
 class Database:
+    """Facade over the SubtitlePipeline SQLite store.
+
+    Owns connection management + task/file/scan surface area; delegates schema
+    bootstrap to :class:`DatabaseMigrations` and config CRUD to
+    :class:`ConfigService`. Public API unchanged from the pre-refactor monolith.
+    """
+
     def __init__(self, db_path: str, persistent: bool = False):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.persistent = persistent
         self._conn = self._create_connection() if persistent else None
-        self._config_cache: dict[str, Any] | None = None
-        self._cache_valid = False
-        self._cached_config_version: int | None = None
+        self.migrations = DatabaseMigrations(self)
+        self.config_service = ConfigService(self)
+
+    # -- Connection management (shared with extracted services) --
 
     def _create_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
@@ -148,181 +116,65 @@ class Database:
         self._conn.close()
         self._conn = None
 
+    # -- Schema / migration delegation --
+
     def initialize(self) -> None:
-        with self.connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path TEXT NOT NULL UNIQUE,
-                    path_key TEXT NOT NULL UNIQUE,
-                    size_bytes INTEGER NOT NULL,
-                    mtime REAL NOT NULL,
-                    stable_hits INTEGER NOT NULL DEFAULT 1,
-                    first_seen_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL
-                );
+        return self.migrations.initialize()
 
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    file_id INTEGER,
-                    file_path TEXT NOT NULL,
-                    file_path_key TEXT NOT NULL,
-                    source_size_bytes INTEGER NOT NULL DEFAULT 0,
-                    source_mtime REAL NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL,
-                    stage TEXT NOT NULL DEFAULT 'queued',
-                    progress REAL NOT NULL DEFAULT 0,
-                    retry_count INTEGER NOT NULL DEFAULT 0,
-                    max_retries INTEGER NOT NULL DEFAULT 0,
-                    cancel_requested INTEGER NOT NULL DEFAULT 0,
-                    restart_required INTEGER NOT NULL DEFAULT 0,
-                    error_message TEXT,
-                    config_snapshot TEXT,
-                    result_payload TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    started_at TEXT,
-                    finished_at TEXT,
-                    parent_dir_ctime REAL NOT NULL DEFAULT 0,
-                    FOREIGN KEY(file_id) REFERENCES files(id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_tasks_status_created_at ON tasks(status, created_at);
-                CREATE INDEX IF NOT EXISTS idx_tasks_file_path_key_status ON tasks(file_path_key, status);
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        return self.migrations._ensure_column(connection, table_name, column_name, definition)
 
-                CREATE TABLE IF NOT EXISTS task_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id INTEGER NOT NULL,
-                    stage TEXT NOT NULL,
-                    level TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    details_json TEXT,
-                    timestamp TEXT NOT NULL,
-                    FOREIGN KEY(task_id) REFERENCES tasks(id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_logs_task_time ON task_logs(task_id, timestamp, id);
+    # -- Config CRUD delegation --
+    # Cache state lives on ConfigService; the property proxies below keep the
+    # pre-refactor test contract intact (tests mutate
+    # ``database._cached_config_version`` to simulate version drift).
 
-                CREATE TABLE IF NOT EXISTS system_config (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    group_name TEXT NOT NULL,
-                    key_name TEXT NOT NULL,
-                    value_json TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    restart_required INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(group_name, key_name)
-                );
+    def get_config(self) -> dict[str, Any]:
+        return self.config_service.get_config()
 
-                CREATE TABLE IF NOT EXISTS translation_cache (
-                    source_hash TEXT NOT NULL,
-                    target_language TEXT NOT NULL,
-                    llm_type TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    content_type TEXT NOT NULL,
-                    custom_prompt_hash TEXT NOT NULL,
-                    translated_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (source_hash, target_language, llm_type, model, content_type, custom_prompt_hash)
-                );
+    def update_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.config_service.update_config(payload)
 
-                CREATE TABLE IF NOT EXISTS scan_status (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    last_scan_at TEXT,
-                    scanned INTEGER NOT NULL DEFAULT 0,
-                    queued INTEGER NOT NULL DEFAULT 0,
-                    skipped INTEGER NOT NULL DEFAULT 0,
-                    pending_count INTEGER NOT NULL DEFAULT 0,
-                    throttled INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL
-                );
-                """
-            )
-            self._ensure_column(connection, "tasks", "source_size_bytes", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column(connection, "tasks", "source_mtime", "REAL NOT NULL DEFAULT 0")
-            self._ensure_column(connection, "tasks", "parent_dir_ctime", "REAL NOT NULL DEFAULT 0")
-            now = utc_now()
-            in_place = bool(_load_config_value(connection, "file", "in_place"))
-            legacy_file_output_dir = _load_config_value(connection, "file", "output_dir")
-            legacy_mux_output_dir = _load_config_value(connection, "mux", "output_dir")
-            output_to_source_dir = _load_config_value(connection, "file", "output_to_source_dir")
-            has_legacy_output_fields = any(
-                value is not None
-                for value in (legacy_file_output_dir, legacy_mux_output_dir, _load_config_value(connection, "file", "in_place"))
-            )
-            if output_to_source_dir is None and has_legacy_output_fields:
-                migrated_output_to_source_dir = (
-                    in_place
-                    or (
-                        str(legacy_file_output_dir or "").strip() == ""
-                        and str(legacy_mux_output_dir or "").strip() == ""
-                    )
-                )
-                connection.execute(
-                    """
-                    INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-                    VALUES ('file', 'output_to_source_dir', ?, 'runtime', 0, ?)
-                    ON CONFLICT(group_name, key_name)
-                    DO UPDATE SET value_json = excluded.value_json,
-                                  updated_at = excluded.updated_at
-                    """,
-                    (json.dumps(migrated_output_to_source_dir), now),
-                )
-            legacy_align_method = _load_config_value(connection, "whisper", "align_method")
-            align_provider = _load_config_value(connection, "whisper", "align_provider")
-            if legacy_align_method is not None and align_provider is None:
-                connection.execute(
-                    """
-                    INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-                    VALUES ('whisper', 'align_provider', ?, 'runtime', 0, ?)
-                    ON CONFLICT(group_name, key_name)
-                    DO UPDATE SET value_json = excluded.value_json,
-                                  updated_at = excluded.updated_at
-                    """,
-                    (json.dumps(_normalize_legacy_align_method(legacy_align_method)), now),
-                )
-            connection.execute(
-                """
-                UPDATE tasks
-                SET source_size_bytes = COALESCE(source_size_bytes, 0),
-                    source_mtime = COALESCE(source_mtime, 0)
-                """
-            )
-            connection.executemany(
-                """
-                DELETE FROM system_config
-                WHERE group_name = ? AND key_name = ?
-                """,
-                list(OBSOLETE_CONFIG_FIELDS),
-            )
-            defaults = copy_default_config()
-            for group_name, group_values in defaults.items():
-                for key_name, value in group_values.items():
-                    scope = "system" if (group_name, key_name) in SYSTEM_LEVEL_FIELDS else "runtime"
-                    restart_required = 1 if scope == "system" else 0
-                    connection.execute(
-                        """
-                        INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(group_name, key_name) DO NOTHING
-                        """,
-                        (group_name, key_name, json.dumps(value), scope, restart_required, now),
-                    )
-            connection.execute(
-                """
-                INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-                VALUES ('system', 'setup_complete', 'false', 'system', 0, ?)
-                ON CONFLICT(group_name, key_name) DO NOTHING
-                """,
-                (now,),
-            )
-            connection.execute(
-                """
-                INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-                VALUES ('system', 'config_version', '0', 'system', 0, ?)
-                ON CONFLICT(group_name, key_name) DO NOTHING
-                """,
-                (now,),
-            )
+    def _get_config_uncached(self) -> dict[str, Any]:
+        return self.config_service._get_config_uncached()
+
+    def _get_config_version(self) -> int:
+        return self.config_service._get_config_version()
+
+    def _bump_config_version(self, connection: sqlite3.Connection) -> int:
+        return self.config_service._bump_config_version(connection)
+
+    @property
+    def _config_cache(self) -> dict[str, Any] | None:
+        return self.config_service._config_cache
+
+    @_config_cache.setter
+    def _config_cache(self, value: dict[str, Any] | None) -> None:
+        self.config_service._config_cache = value
+
+    @property
+    def _cache_valid(self) -> bool:
+        return self.config_service._cache_valid
+
+    @_cache_valid.setter
+    def _cache_valid(self, value: bool) -> None:
+        self.config_service._cache_valid = value
+
+    @property
+    def _cached_config_version(self) -> int | None:
+        return self.config_service._cached_config_version
+
+    @_cached_config_version.setter
+    def _cached_config_version(self, value: int | None) -> None:
+        self.config_service._cached_config_version = value
+
+    # -- Config-adjacent helpers --
 
     def _build_result_affecting_snapshot(self, config: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -336,156 +188,6 @@ class Database:
             return Path(config_snapshot["processing"]["work_dir"]) / str(task_id)
         config = self.get_config()
         return Path(config["processing"]["work_dir"]) / str(task_id)
-
-    _ALLOWED_TABLE_NAMES = frozenset({"tasks", "files", "task_logs"})
-
-    def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
-        import re
-        if table_name not in self._ALLOWED_TABLE_NAMES:
-            raise ValueError(f"unexpected table name for _ensure_column: {table_name!r}")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column_name):
-            raise ValueError(f"unexpected column name for _ensure_column: {column_name!r}")
-        if not re.fullmatch(r"[A-Za-z0-9 ()'_]*", definition):
-            raise ValueError(f"unexpected column definition for _ensure_column: {definition!r}")
-        # PRAGMA table_info column index 1 is the name (sqlite3.Row agnostic).
-        columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-        if any(column[1] == column_name for column in columns):
-            return
-        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
-
-    def _get_config_uncached(self) -> dict[str, Any]:
-        defaults = copy_default_config()
-        with self.connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT group_name, key_name, value_json, scope, restart_required, updated_at
-                FROM system_config
-                ORDER BY group_name, key_name
-                """
-            ).fetchall()
-        restart_required = False
-        for row in rows:
-            restart_required = restart_required or bool(row["restart_required"] and row["scope"] == "system")
-            if row["group_name"] == "system":
-                continue
-            defaults.setdefault(row["group_name"], {})[row["key_name"]] = json.loads(row["value_json"])
-        whisper_config = defaults.setdefault("whisper", {})
-        _migrate_whisper_config_dict(whisper_config)
-        if defaults.get("whisper", {}).get("device") == "auto":
-            defaults["whisper"]["device"] = detect_device()
-        defaults["meta"] = {"restart_required": restart_required}
-        return defaults
-
-    def _get_config_version(self) -> int:
-        """Read the config version from DB for cross-process cache invalidation.
-
-        Returns 0 if the version row does not exist yet (e.g. pre-migration DB).
-        """
-        with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT value_json
-                FROM system_config
-                WHERE group_name = 'system' AND key_name = 'config_version'
-                """
-            ).fetchone()
-        if row is None:
-            return 0
-        try:
-            return int(json.loads(row["value_json"]))
-        except (ValueError, TypeError):
-            return 0
-
-    def _bump_config_version(self, connection: sqlite3.Connection) -> int:
-        """Atomically increment and return the new config version."""
-        connection.execute(
-            """
-            INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-            VALUES ('system', 'config_version', '0', 'system', 0, ?)
-            ON CONFLICT(group_name, key_name) DO NOTHING
-            """,
-            (utc_now(),),
-        )
-        connection.execute(
-            """
-            UPDATE system_config
-            SET value_json = CAST(CAST(value_json AS INTEGER) + 1 AS TEXT),
-                updated_at = ?
-            WHERE group_name = 'system' AND key_name = 'config_version'
-            """,
-            (utc_now(),),
-        )
-        row = connection.execute(
-            """
-            SELECT value_json
-            FROM system_config
-            WHERE group_name = 'system' AND key_name = 'config_version'
-            """
-        ).fetchone()
-        try:
-            return int(json.loads(row["value_json"])) if row else 0
-        except (ValueError, TypeError):
-            return 0
-
-    def get_config(self) -> dict[str, Any]:
-        current_version = self._get_config_version()
-        if (
-            self._cache_valid
-            and self._config_cache is not None
-            and self._cached_config_version == current_version
-        ):
-            return self._config_cache
-        self._config_cache = self._get_config_uncached()
-        self._cache_valid = True
-        self._cached_config_version = current_version
-        return self._config_cache
-
-    def update_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        updated_system_key = False
-        with self.connect() as connection:
-            current = self._get_config_uncached()
-            now = utc_now()
-            for group_name, group_values in payload.items():
-                if not isinstance(group_values, dict):
-                    continue
-                for key_name, value in group_values.items():
-                    if group_name == "whisper" and key_name == "align_method":
-                        key_name = "align_provider"
-                        value = _normalize_legacy_align_method(value)
-                    elif group_name == "whisper" and key_name == "align_provider":
-                        value = _normalize_align_provider(value)
-                    if (group_name, key_name) in READ_ONLY_CONFIG_FIELDS:
-                        continue
-                    if group_name not in current or key_name not in current[group_name]:
-                        raise KeyError(f"unknown config field: {group_name}.{key_name}")
-                    scope = "system" if (group_name, key_name) in SYSTEM_LEVEL_FIELDS else "runtime"
-                    restart_required = 1 if scope == "system" else 0
-                    if scope == "system" and current[group_name][key_name] != value:
-                        updated_system_key = True
-                    connection.execute(
-                        """
-                        INSERT INTO system_config (group_name, key_name, value_json, scope, restart_required, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(group_name, key_name)
-                        DO UPDATE SET value_json = excluded.value_json,
-                                      scope = excluded.scope,
-                                      restart_required = excluded.restart_required,
-                                      updated_at = excluded.updated_at
-                        """,
-                        (group_name, key_name, json.dumps(value), scope, restart_required, now),
-                    )
-            if updated_system_key:
-                connection.execute(
-                    """
-                    UPDATE system_config
-                    SET restart_required = CASE WHEN scope = 'system' THEN 1 ELSE restart_required END,
-                        updated_at = ?
-                    """,
-                    (now,),
-                )
-            self._bump_config_version(connection)
-        self._cache_valid = False
-        return self.get_config()
 
     def recover_orphaned_tasks(self) -> int:
         """Reset tasks stuck in 'processing' (e.g. after a crash) to 'failed' so users can retry."""
@@ -553,6 +255,10 @@ class Database:
                 (json.dumps(setup_complete), utc_now()),
             )
         return self.get_system_status()
+
+    # ------------------------------------------------------------------
+    # Task query surface
+    # ------------------------------------------------------------------
 
     def list_tasks(self, page: int, page_size: int, status: str | None = None) -> PageResult:
         offset = max(page - 1, 0) * page_size
@@ -683,6 +389,10 @@ class Database:
                 (task_id, stage, level, message, json.dumps(details) if details else None, utc_now()),
             )
 
+    # ------------------------------------------------------------------
+    # Task lifecycle
+    # ------------------------------------------------------------------
+
     def request_cancel(self, task_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
             connection.execute(
@@ -741,6 +451,10 @@ class Database:
             _fire_event("task.updated", task_to_event_payload(task))
         return task
 
+    # ------------------------------------------------------------------
+    # File observation
+    # ------------------------------------------------------------------
+
     def observe_file(self, file_path: str, size_bytes: int, mtime: float) -> dict[str, Any]:
         path_key = normalize_path(file_path)
         now = utc_now()
@@ -784,6 +498,10 @@ class Database:
             "mtime": mtime,
             "stable_hits": stable_hits,
         }
+
+    # ------------------------------------------------------------------
+    # Translation cache
+    # ------------------------------------------------------------------
 
     def get_translation_cache(
         self,
@@ -844,6 +562,10 @@ class Database:
                     custom_prompt_hash, json.dumps(translated_lines, ensure_ascii=False), now,
                 ),
             )
+
+    # ------------------------------------------------------------------
+    # Scan status
+    # ------------------------------------------------------------------
 
     def record_scan_result(self, result: dict[str, Any]) -> None:
         now = utc_now()
@@ -1041,6 +763,10 @@ class Database:
                 for row in rows:
                     result.add((row["file_path_key"], int(row["source_size_bytes"]), float(row["source_mtime"])))
         return result
+
+    # ------------------------------------------------------------------
+    # Task lifecycle: creation, claiming, terminal transitions
+    # ------------------------------------------------------------------
 
     def create_task(self, file_id: int, file_path: str, size_bytes: int, mtime: float, parent_dir_ctime: float = 0.0) -> dict[str, Any]:
         config = self.get_config()
@@ -1258,3 +984,23 @@ class Database:
                 (task_id,),
             ).fetchone()
         return bool(row and row["cancel_requested"])
+
+
+__all__ = [
+    # Facade + data classes
+    "Database",
+    "PageResult",
+    # Extracted services
+    "ConfigService",
+    "DatabaseMigrations",
+    # Constants
+    "OBSOLETE_CONFIG_FIELDS",
+    "READ_ONLY_CONFIG_FIELDS",
+    # Utilities
+    "utc_now",
+    "normalize_path",
+    "_fire_event",
+    "_migrate_whisper_config_dict",
+    "_normalize_align_provider",
+    "_normalize_legacy_align_method",
+]
