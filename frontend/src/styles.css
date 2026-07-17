@@ -1135,3 +1135,228 @@ textarea {
   background: linear-gradient(135deg, #2563eb, #3b82f6);
 }
 
+/* ---- Dark mode ---- */
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+[data-theme="dark"] body {
+  background: linear-gradient(180deg, #0f172a 0%, #111827 30%, #0f172a 100%);
+}
+[data-theme="dark"] :root,
+[data-theme="dark"] {
+  color: #e2e8f0;
+  background: #0f172a;
+}
+[data-theme="dark"] input,
+[data-theme="dark"] select,
+[data-theme="dark"] textarea {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+[data-theme="dark"] .sidebar {
+  background: #000;
+}
+[data-theme="dark"] table,
+[data-theme="dark"] .task-card,
+[data-theme="dark"] .settings-card,
+[data-theme="dark"] .model-card,
+[data-theme="dark"] .log-panel,
+[data-theme="dark"] .stat-card,
+[data-theme="dark"] .chart-section,
+[data-theme="dark"] .detail-panel,
+[data-theme="dark"] .setup-card {
+  background: #1e293b !important;
+  color: #e2e8f0;
+  border-color: #334155 !important;
+}
+[data-theme="dark"] th {
+  background: #0f172a !important;
+  color: #94a3b8;
+}
+[data-theme="dark"] td {
+  border-color: #334155 !important;
+}
+[data-theme="dark"] .alert.info {
+  background: #1e293b;
+  color: #93c5fd;
+}
+[data-theme="dark"] .alert.error {
+  background: #450a0a;
+  color: #fca5a5;
+}
+
+/* ---- Theme toggle ---- */
+.theme-toggle {
+  margin-top: auto;
+  background: rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 13px;
+  padding: 8px 12px;
+}
+.theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ---- Dashboard ---- */
+.dashboard-page {
+  padding: 24px 32px;
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.stat-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 20px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: #1e293b;
+}
+.stat-label {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 4px;
+}
+.stat-done .stat-value { color: #16a34a; }
+.stat-failed .stat-value { color: #dc2626; }
+.stat-pending .stat-value { color: #d97706; }
+.dashboard-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.chart-section {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 20px;
+}
+.chart-section h3 {
+  margin: 0 0 16px;
+  font-size: 16px;
+}
+.empty-hint {
+  color: #94a3b8;
+  font-size: 14px;
+}
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 200px;
+  padding-bottom: 24px;
+}
+.bar-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+  position: relative;
+}
+.bar-fill {
+  width: 100%;
+  background: linear-gradient(180deg, #3b82f6, #2563eb);
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+  transition: height 0.3s ease;
+}
+.bar-label {
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+.bar-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.stage-table {
+  width: 100%;
+  font-size: 13px;
+}
+.stage-table th,
+.stage-table td {
+  padding: 8px 10px;
+  text-align: left;
+}
+
+/* ---- Batch ops ---- */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+.batch-bar .batch-info {
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* ---- Search ---- */
+.search-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.search-row input {
+  flex: 1;
+}
+.search-row input[type="date"] {
+  max-width: 160px;
+}
+
+/* ---- Subtitle preview ---- */
+.subtitle-preview {
+  margin-top: 24px;
+}
+.subtitle-preview pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 16px;
+  border-radius: 12px;
+  max-height: 500px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.subtitle-edit-area {
+  width: 100%;
+  min-height: 400px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.subtitle-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ---- Settings sections ---- */
+.settings-section {
+  margin-bottom: 24px;
+}
+.settings-section h3 {
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+.config-import-export {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+

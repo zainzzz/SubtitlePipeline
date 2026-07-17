@@ -728,20 +728,54 @@ def extract_audio(context: TaskContext) -> Path:
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
         raise PipelineError("ffmpeg 未安装，无法执行真实音频提取")
+    audio_config = context.config_snapshot.get("audio", {})
+    track_mode = str(audio_config.get("track_selection_mode", "first")).strip().lower()
+    prefer_languages = audio_config.get("prefer_languages", [])
+    stream_index = None
+    if track_mode == "prefer" and prefer_languages:
+        stream_index = _find_preferred_audio_track(ffmpeg_path, source_path, prefer_languages)
     command = [
         ffmpeg_path,
         "-y",
         "-i",
         str(source_path),
-        "-vn",
+    ]
+    if stream_index is not None:
+        command.extend(["-map", f"0:a:{stream_index}"])
+    else:
+        command.extend(["-vn"])
+    command.extend([
         "-ac",
         "1",
         "-ar",
         str(whisper_config["sample_rate"]),
         str(audio_path),
-    ]
+    ])
     _run_ffmpeg(command, "音频提取超时，FFmpeg 执行超过 7200 秒", "ffmpeg 执行失败")
     return audio_path
+
+
+def _find_preferred_audio_track(ffmpeg_path: str, source_path: Path, prefer_languages: list[str]) -> int | None:
+    try:
+        result = subprocess.run(
+            [shutil.which("ffprobe") or "ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_streams", "-select_streams", "a", str(source_path)],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        for lang in prefer_languages:
+            lang_lower = lang.lower().strip()
+            for idx, stream in enumerate(streams):
+                tags = stream.get("tags", {})
+                stream_lang = str(tags.get("language", tags.get("BCP47", ""))).lower().strip()
+                if stream_lang == lang_lower:
+                    return idx
+        return None
+    except Exception:
+        return None
 
 
 def save_asr_result(context: TaskContext, payload: dict[str, Any]) -> Path:

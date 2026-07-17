@@ -7,8 +7,10 @@ import {
   bilingualModeOptions,
   cloneConfig,
   defaultAppConfig,
+  exportConfig,
   getConfig,
   getModels,
+  importConfig,
   llmTypeOptions,
   ModelListResponse,
   retryModeOptions,
@@ -20,7 +22,7 @@ import {
 import { DirectoryPicker } from '../components/DirectoryPicker'
 import { addToList, countChangedSections, getAlignStatus, getTranslationStatus, removeFromList, StepCard, StepTone, TagEditor } from '../components/SettingsWidgets'
 
-type GroupName = 'file' | 'processing' | 'whisper' | 'translation' | 'subtitle' | 'mux' | 'logging'
+type GroupName = 'file' | 'processing' | 'whisper' | 'translation' | 'subtitle' | 'mux' | 'logging' | 'notification' | 'schedule' | 'audio'
 
 const alignProviderOptions: Array<{ value: AlignProvider; label: string }> = [
   { value: 'auto', label: '自动（推荐）' },
@@ -37,6 +39,9 @@ const initialExpandedState: Record<string, boolean> = {
   subtitle: false,
   mux: false,
   system: false,
+  notification: false,
+  schedule: false,
+  audio: false,
 }
 
 const computeTypeOptions = [
@@ -263,6 +268,41 @@ export function SettingsPage() {
     setConfig(cloneConfig(loadedConfig))
     setMessage('已恢复当前已保存配置')
     setError('')
+  }
+
+  const handleExport = async () => {
+    try {
+      const result = await exportConfig()
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'subpipeline-config.json'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导出失败')
+    }
+  }
+
+  const handleImport = async () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      try {
+        const text = await file.text()
+        const data = JSON.parse(text)
+        const imported = await importConfig(data.config || data)
+        setConfig(cloneConfig({ ...defaultAppConfig, ...imported }))
+        setError('')
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '导入失败')
+      }
+    }
+    input.click()
   }
 
   const handleTestTranslation = async () => {
@@ -829,6 +869,112 @@ export function SettingsPage() {
             </section>
           )}
         />
+
+        <StepCard
+          index="07"
+          title="通知 & Webhook"
+          description="任务完成后自动通知媒体服务器刷新库。"
+          statusLabel={config.notification.webhook_enabled ? '已启用' : '未启用'}
+          tone={config.notification.webhook_enabled ? 'success' : 'neutral'}
+          pills={[config.notification.webhook_type || 'jellyfin']}
+          expanded={expanded.notification}
+          onToggle={() => toggleExpanded('notification')}
+          headerActions={(
+            <label className="switch-row">
+              <span>启用</span>
+              <input type="checkbox" checked={config.notification.webhook_enabled} onChange={(e) => setField('notification', 'webhook_enabled', e.target.checked)} />
+            </label>
+          )}
+          basicContent={(
+            <div className="field-grid">
+              <label>
+                <span>服务器类型</span>
+                <select value={config.notification.webhook_type} onChange={(e) => setField('notification', 'webhook_type', e.target.value)}>
+                  <option value="jellyfin">Jellyfin</option>
+                  <option value="emby">Emby</option>
+                  <option value="plex">Plex</option>
+                  <option value="generic">通用 Webhook</option>
+                </select>
+              </label>
+              <label>
+                <span>服务器地址</span>
+                <input value={config.notification.webhook_url} onChange={(e) => setField('notification', 'webhook_url', e.target.value)} placeholder="http://jellyfin:8096" />
+              </label>
+              <label>
+                <span>API Token</span>
+                <input type="password" value={config.notification.webhook_token} onChange={(e) => setField('notification', 'webhook_token', e.target.value)} placeholder="API Key / Plex Token" />
+              </label>
+              <label>
+                <span>媒体库 ID（逗号分隔，留空扫描全部）</span>
+                <input value={config.notification.webhook_library_id} onChange={(e) => setField('notification', 'webhook_library_id', e.target.value)} />
+              </label>
+            </div>
+          )}
+        />
+
+        <StepCard
+          index="08"
+          title="定时处理"
+          description="仅在指定时段处理任务，避免高峰期占用 GPU。"
+          statusLabel={config.schedule.enabled ? '已启用' : '未启用'}
+          tone={config.schedule.enabled ? 'success' : 'neutral'}
+          pills={[config.schedule.enabled ? `${config.schedule.start_time}-${config.schedule.end_time}` : '全天']}
+          expanded={expanded.schedule}
+          onToggle={() => toggleExpanded('schedule')}
+          headerActions={(
+            <label className="switch-row">
+              <span>启用</span>
+              <input type="checkbox" checked={config.schedule.enabled} onChange={(e) => setField('schedule', 'enabled', e.target.checked)} />
+            </label>
+          )}
+          basicContent={(
+            <div className="field-grid">
+              <label>
+                <span>开始时间</span>
+                <input type="time" value={config.schedule.start_time} onChange={(e) => setField('schedule', 'start_time', e.target.value)} />
+              </label>
+              <label>
+                <span>结束时间</span>
+                <input type="time" value={config.schedule.end_time} onChange={(e) => setField('schedule', 'end_time', e.target.value)} />
+              </label>
+              <label>
+                <span>时区</span>
+                <input value={config.schedule.timezone} onChange={(e) => setField('schedule', 'timezone', e.target.value)} />
+              </label>
+            </div>
+          )}
+        />
+
+        <StepCard
+          index="09"
+          title="音轨选择"
+          description="多音轨视频的音频选择策略。"
+          statusLabel={config.audio.track_selection_mode === 'prefer' ? '语言偏好' : '默认'}
+          tone={config.audio.track_selection_mode === 'prefer' ? 'success' : 'neutral'}
+          pills={[config.audio.track_selection_mode]}
+          expanded={expanded.audio}
+          onToggle={() => toggleExpanded('audio')}
+          basicContent={(
+            <div className="field-grid">
+              <label>
+                <span>选择模式</span>
+                <select value={config.audio.track_selection_mode} onChange={(e) => setField('audio', 'track_selection_mode', e.target.value)}>
+                  <option value="first">默认音轨</option>
+                  <option value="prefer">按语言偏好</option>
+                </select>
+              </label>
+              <label>
+                <span>首选语言（逗号分隔，如 jpn,eng）</span>
+                <input value={config.audio.prefer_languages.join(',')} onChange={(e) => setField('audio', 'prefer_languages', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))} placeholder="jpn,eng" />
+              </label>
+            </div>
+          )}
+        />
+
+        <div className="config-import-export">
+          <button className="ghost-button" onClick={() => void handleExport()}>导出配置</button>
+          <button className="ghost-button" onClick={() => void handleImport()}>导入配置</button>
+        </div>
       </div>
 
       <div className="page-actions settings-action-bar">

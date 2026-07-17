@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { cancelTask, checkResumeFeasibility, deleteTask, getScanStatus, getTasks, ResumeCheckResponse, retryTask, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
+import { batchTasks, cancelTask, checkResumeFeasibility, deleteTask, getScanStatus, getTasks, retryTask, ResumeCheckResponse, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
 import { usePolling } from '../hooks'
 
 const PAGE_SIZE = 20
@@ -37,20 +37,23 @@ export function TasksPage() {
   const [activeTab, setActiveTab] = useState<TaskTab>('all')
   const [currentPage, setCurrentPage] = useState(1)
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const navigate = useNavigate()
 
-  // 仅在 tab 切换或手动刷新时做 resume feasibility 检查，不再每 3 秒轮询中重复触发
   const load = useCallback(async (opts: { checkResume?: boolean; quiet?: boolean } = {}) => {
     const { checkResume = false, quiet = false } = opts
     if (!quiet) setLoading(true)
     try {
-      const nextData = await getTasks(activeTab === 'all' ? undefined : activeTab, currentPage, PAGE_SIZE)
+      const nextData = await getTasks(
+        activeTab === 'all' ? undefined : activeTab,
+        currentPage, PAGE_SIZE,
+        searchQuery || undefined,
+      )
       setData(nextData)
       try {
         setScanStatus(await getScanStatus())
-      } catch {
-        // 扫描状态可选,忽略错误
-      }
+      } catch { /* scan status optional */ }
       if (checkResume) {
         const failedTasks = nextData.items.filter((task) => task.status === 'failed')
         if (failedTasks.length > 0) {
@@ -74,9 +77,9 @@ export function TasksPage() {
     } finally {
       if (!quiet) setLoading(false)
     }
-  }, [activeTab, currentPage])
+  }, [activeTab, currentPage, searchQuery])
 
-  usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage])
+  usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage, searchQuery])
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
   const visiblePages = useMemo(() => getVisiblePages(currentPage, totalPages), [currentPage, totalPages])
@@ -89,7 +92,8 @@ export function TasksPage() {
   const handleTabChange = (tab: TaskTab) => {
     setActiveTab(tab)
     setCurrentPage(1)
-    setResumeChecks({}) // clear stale resume state
+    setResumeChecks({})
+    setSelectedIds(new Set())
   }
 
   const handleAction = async (taskId: number, type: 'cancel' | 'restart' | 'resume' | 'delete') => {
@@ -105,7 +109,7 @@ export function TasksPage() {
       } else {
         await retryTask(taskId, 'restart')
       }
-      await load({ checkResume: true }) // re-check resume feasibility after state-changing actions
+      await load({ checkResume: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '任务操作失败')
     }
@@ -120,6 +124,36 @@ export function TasksPage() {
       await load({ quiet: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '扫描开关切换失败')
+    }
+  }
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === data.items.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(data.items.map((t) => t.id)))
+    }
+  }
+
+  const handleBatch = async (action: 'retry' | 'cancel' | 'delete') => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    if (action === 'delete' && !window.confirm(`确认批量删除 ${ids.length} 个任务?此操作不可恢复。`)) return
+    try {
+      await batchTasks(ids, action)
+      setSelectedIds(new Set())
+      await load({ checkResume: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量操作失败')
     }
   }
 
@@ -145,6 +179,14 @@ export function TasksPage() {
       </header>
       {error ? <div className="alert error">{error}</div> : null}
       <div className="card">
+        <div className="search-row">
+          <input
+            type="text"
+            placeholder="搜索文件名…"
+            value={searchQuery}
+            onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1) }}
+          />
+        </div>
         <div className="task-toolbar">
           <div className="tab-row">
             {tabs.map((tab) => {
@@ -182,9 +224,26 @@ export function TasksPage() {
             </button>
           </div>
         </div>
+        {selectedIds.size > 0 ? (
+          <div className="batch-bar">
+            <span className="batch-info">已选 {selectedIds.size} 个任务</span>
+            <button onClick={() => void handleBatch('retry')} type="button">批量重试</button>
+            <button onClick={() => void handleBatch('cancel')} type="button">批量取消</button>
+            <button className="danger" onClick={() => void handleBatch('delete')} type="button">批量删除</button>
+            <button onClick={() => setSelectedIds(new Set())} type="button">取消选择</button>
+          </div>
+        ) : null}
         <table className="task-table">
           <thead>
             <tr>
+              <th>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size > 0 && selectedIds.size === data.items.length}
+                  onChange={toggleSelectAll}
+                  style={{ width: 'auto' }}
+                />
+              </th>
               <th>ID</th>
               <th>文件</th>
               <th>状态</th>
@@ -197,6 +256,14 @@ export function TasksPage() {
           <tbody>
             {data.items.map((task) => (
               <tr key={task.id} onClick={() => navigate(`/tasks/${task.id}`)}>
+                <td onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(task.id)}
+                    onChange={() => toggleSelect(task.id)}
+                    style={{ width: 'auto' }}
+                  />
+                </td>
                 <td>{task.id}</td>
                 <td className="task-file" title={task.file_path}>{task.file_path}</td>
                 <td><span className={`status-badge status-${task.status}`}>{task.status}</span></td>

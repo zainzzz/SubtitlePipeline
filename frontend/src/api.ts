@@ -138,6 +138,23 @@ export type AppConfig = {
   logging: {
     level: string
   }
+  notification: {
+    webhook_enabled: boolean
+    webhook_type: string
+    webhook_url: string
+    webhook_token: string
+    webhook_library_id: string
+  }
+  schedule: {
+    enabled: boolean
+    start_time: string
+    end_time: string
+    timezone: string
+  }
+  audio: {
+    prefer_languages: string[]
+    track_selection_mode: string
+  }
   meta?: {
     restart_required: boolean
   }
@@ -347,6 +364,23 @@ export const defaultAppConfig: AppConfig = {
   logging: {
     level: 'INFO',
   },
+  notification: {
+    webhook_enabled: false,
+    webhook_type: 'jellyfin',
+    webhook_url: '',
+    webhook_token: '',
+    webhook_library_id: '',
+  },
+  schedule: {
+    enabled: false,
+    start_time: '00:00',
+    end_time: '23:59',
+    timezone: 'Asia/Shanghai',
+  },
+  audio: {
+    prefer_languages: [],
+    track_selection_mode: 'first',
+  },
   meta: {
     restart_required: false,
   },
@@ -382,17 +416,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function cloneConfig(config: AppConfig): AppConfig {
   return structuredClone(config)
-}
-
-export function getTasks(status?: string, page = 1, pageSize = 20): Promise<TaskListResponse> {
-  const params = new URLSearchParams({
-    page: String(page),
-    page_size: String(pageSize),
-  })
-  if (status) {
-    params.set('status', status)
-  }
-  return request<TaskListResponse>(`/api/tasks?${params.toString()}`)
 }
 
 export function getTask(taskId: string): Promise<Task> {
@@ -491,4 +514,76 @@ export function deleteModel(name: string): Promise<{ message: string }> {
 
 export function activateModel(name: string): Promise<{ message: string; config: AppConfig }> {
   return request<{ message: string; config: AppConfig }>(`/api/models/${name}/activate`, { method: 'POST' })
+}
+
+// ---- Dashboard ----
+export type DashboardStats = {
+  total: number
+  done: number
+  failed: number
+  cancelled: number
+  processing: number
+  pending: number
+  success_rate: number
+  avg_duration_seconds: number
+  daily_trend: Array<{ date: string; count: number }>
+  stage_stats: Array<{ stage: string; count: number; avg_seconds: number }>
+}
+
+export function getDashboardStats(): Promise<DashboardStats> {
+  return request<DashboardStats>('/api/dashboard/stats')
+}
+
+// ---- Batch operations ----
+export type BatchAction = 'retry' | 'cancel' | 'delete'
+
+export function batchTasks(taskIds: number[], action: BatchAction): Promise<{ results?: unknown[]; cancelled?: number; deleted?: number }> {
+  return request('/api/tasks/batch', {
+    method: 'POST',
+    body: JSON.stringify({ task_ids: taskIds, action }),
+  })
+}
+
+// ---- Subtitle preview & edit ----
+export function getTaskSubtitle(taskId: number): Promise<{ content: string; path: string }> {
+  return request(`/api/tasks/${taskId}/subtitle`)
+}
+
+export function updateTaskSubtitle(taskId: number, content: string): Promise<{ status: string }> {
+  return request(`/api/tasks/${taskId}/subtitle`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  })
+}
+
+// ---- Config import/export ----
+export function exportConfig(): Promise<{ config: Record<string, unknown>; version: number }> {
+  return request('/api/config/export')
+}
+
+export function importConfig(config: Record<string, unknown>): Promise<AppConfig> {
+  return request<AppConfig>('/api/config/import', {
+    method: 'POST',
+    body: JSON.stringify({ config, version: 1 }),
+  })
+}
+
+// ---- Tasks with search ----
+export function getTasks(
+  status?: string,
+  page = 1,
+  pageSize = 20,
+  search?: string,
+  dateFrom?: string,
+  dateTo?: string,
+): Promise<TaskListResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  })
+  if (status) params.set('status', status)
+  if (search) params.set('search', search)
+  if (dateFrom) params.set('date_from', dateFrom)
+  if (dateTo) params.set('date_to', dateTo)
+  return request<TaskListResponse>(`/api/tasks?${params.toString()}`)
 }

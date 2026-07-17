@@ -245,10 +245,38 @@ class WorkerService:
                 interval = int(self.database.get_config()["processing"]["poll_interval_seconds"])
                 time.sleep(max(interval, 1))
                 continue
+            if not self._is_within_schedule_window():
+                interval = int(self.database.get_config()["processing"]["poll_interval_seconds"])
+                time.sleep(max(interval, 1))
+                continue
             processed = self.process_next_task()
             if not processed:
                 interval = int(self.database.get_config()["processing"]["poll_interval_seconds"])
                 time.sleep(max(interval, 1))
+
+    def _is_within_schedule_window(self) -> bool:
+        config = self.database.get_config()
+        schedule_cfg = config.get("schedule", {})
+        if not schedule_cfg.get("enabled"):
+            return True
+        from datetime import datetime, time as dt_time
+        import zoneinfo
+        tz_name = str(schedule_cfg.get("timezone", "Asia/Shanghai")).strip() or "Asia/Shanghai"
+        try:
+            tz = zoneinfo.ZoneInfo(tz_name)
+        except Exception:
+            tz = zoneinfo.ZoneInfo("Asia/Shanghai")
+        now = datetime.now(tz)
+        start_parts = str(schedule_cfg.get("start_time", "00:00")).split(":")
+        end_parts = str(schedule_cfg.get("end_time", "23:59")).split(":")
+        try:
+            start_t = dt_time(int(start_parts[0]), int(start_parts[1]))
+            end_t = dt_time(int(end_parts[0]), int(end_parts[1]))
+        except (ValueError, IndexError):
+            return True
+        if start_t <= end_t:
+            return start_t <= now.time() <= end_t
+        return now.time() >= start_t or now.time() <= end_t
 
     def process_next_task(self) -> bool:
         task = self.database.claim_next_pending_task()
@@ -257,6 +285,7 @@ class WorkerService:
         try:
             result_payload = self._process_claimed_task(task)
             self.database.mark_task_done(task["id"], result_payload)
+            self._send_webhook(task)
         except CancellationRequested:
             latest = self.database.get_task(task["id"])
             self.database.mark_task_cancelled(task["id"], latest["stage"] if latest else task["stage"])
@@ -264,6 +293,14 @@ class WorkerService:
             latest = self.database.get_task(task["id"])
             self.database.mark_task_failure(task["id"], latest["stage"] if latest else task["stage"], str(exc))
         return True
+
+    def _send_webhook(self, task: dict[str, Any]) -> None:
+        try:
+            from .webhook import send_webhook_notification
+            config = self.database.get_config()
+            send_webhook_notification(config, task)
+        except Exception:
+            logger.debug("webhook notification failed", exc_info=True)
 
     def _process_claimed_task(self, task: dict[str, Any]) -> dict[str, Any]:
         snapshot = task["config_snapshot"]

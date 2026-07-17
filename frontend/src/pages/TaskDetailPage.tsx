@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
-import { getTask, getTaskLogs, LogResponse, Task } from '../api'
+import { getTask, getTaskLogs, getTaskSubtitle, updateTaskSubtitle, LogResponse, Task } from '../api'
 import { usePolling } from '../hooks'
 
 export function TaskDetailPage() {
@@ -10,6 +10,10 @@ export function TaskDetailPage() {
   const [logs, setLogs] = useState<LogResponse>({ items: [], total: 0, page: 1, page_size: 20 })
   const [page, setPage] = useState(1)
   const [error, setError] = useState('')
+  const [subtitleContent, setSubtitleContent] = useState<string | null>(null)
+  const [subtitlePath, setSubtitlePath] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [editContent, setEditContent] = useState('')
 
   const loadTask = useCallback(async () => {
     if (!taskId) {
@@ -48,6 +52,37 @@ export function TaskDetailPage() {
   if (!taskId) {
     return <div className="alert error">缺少任务 ID</div>
   }
+
+  const loadSubtitle = async () => {
+    if (!taskId || !task) return
+    if (task.status !== 'done' || !task.result_payload?.subtitle_paths?.length) return
+    try {
+      const result = await getTaskSubtitle(Number(taskId))
+      setSubtitleContent(result.content)
+      setSubtitlePath(result.path)
+    } catch {
+      setSubtitleContent(null)
+    }
+  }
+
+  const startEdit = () => {
+    if (subtitleContent === null) return
+    setEditContent(subtitleContent)
+    setEditing(true)
+  }
+
+  const saveEdit = async () => {
+    if (!taskId) return
+    try {
+      await updateTaskSubtitle(Number(taskId), editContent)
+      setSubtitleContent(editContent)
+      setEditing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    }
+  }
+
+  const hasSubtitle = task?.status === 'done' && task?.result_payload?.subtitle_paths?.length
 
   return (
     <section>
@@ -99,6 +134,39 @@ export function TaskDetailPage() {
               </ul>
             </div>
           </div>
+          {hasSubtitle ? (
+            <div className="card subtitle-preview">
+              <div className="card-header">
+                <h2>字幕预览</h2>
+                <div>
+                  {subtitleContent === null ? (
+                    <button onClick={() => void loadSubtitle()} type="button">加载字幕</button>
+                  ) : editing ? (
+                    <>
+                      <button onClick={() => void saveEdit()} type="button">保存</button>
+                      <button onClick={() => setEditing(false)} type="button">取消</button>
+                    </>
+                  ) : (
+                    <button onClick={startEdit} type="button">编辑</button>
+                  )}
+                </div>
+              </div>
+              {subtitleContent !== null ? (
+                editing ? (
+                  <textarea
+                    className="subtitle-edit-area"
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                  />
+                ) : (
+                  <pre>{subtitleContent}</pre>
+                )
+              ) : (
+                <p className="muted">点击"加载字幕"查看内容</p>
+              )}
+              {subtitlePath ? <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{subtitlePath}</p> : null}
+            </div>
+          ) : null}
           <div className="card">
             <div className="card-header">
               <h2>日志</h2>

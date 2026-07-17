@@ -1025,3 +1025,203 @@ class Database:
                 (task_id,),
             ).fetchone()
         return bool(row and row["cancel_requested"])
+
+    # ---- Dashboard statistics ----
+
+    def get_dashboard_stats(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            status_rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status"
+            ).fetchall()
+            total = sum(r["count"] for r in status_rows)
+            status_map = {r["status"]: r["count"] for r in status_rows}
+            done = status_map.get("done", 0)
+            failed = status_map.get("failed", 0)
+            cancelled = status_map.get("cancelled", 0)
+            processing = status_map.get("processing", 0)
+            pending = status_map.get("pending", 0)
+            success_rate = round(done / total * 100, 1) if total > 0 else 0.0
+
+            # Average processing duration for completed tasks
+            duration_row = connection.execute(
+                """
+                SELECT AVG(
+                    (julianday(COALESCE(finished_at, updated_at)) - julianday(started_at)) * 86400
+                ) AS avg_seconds
+                FROM tasks
+                WHERE status = 'done' AND started_at IS NOT NULL AND finished_at IS NOT NULL
+                """
+            ).fetchone()
+            avg_duration = round(duration_row["avg_seconds"]) if duration_row and duration_row["avg_seconds"] else 0
+
+            # Daily trend (last 14 days)
+            trend_rows = connection.execute(
+                """
+                SELECT DATE(finished_at) AS day, COUNT(*) AS count
+                FROM tasks
+                WHERE status = 'done' AND finished_at IS NOT NULL
+                  AND finished_at >= datetime('now', '-14 days')
+                GROUP BY DATE(finished_at)
+                ORDER BY day DESC
+                """
+            ).fetchall()
+            daily_trend = [{"date": r["day"], "count": r["count"]} for r in trend_rows]
+
+            # Average processing duration by stage (for bottleneck analysis)
+            stage_rows = connection.execute(
+                """
+                SELECT stage, COUNT(*) AS count,
+                       AVG(
+                           (julianday(COALESCE(finished_at, updated_at)) - julianday(started_at)) * 86400
+                       ) AS avg_seconds
+                FROM tasks
+                WHERE status = 'done' AND started_at IS NOT NULL AND finished_at IS NOT NULL
+                GROUP BY stage
+                ORDER BY avg_seconds DESC
+                LIMIT 8
+                """
+            ).fetchall()
+            stage_stats = [
+                {"stage": normalize_stage_name(r["stage"]), "count": r["count"], "avg_seconds": round(r["avg_seconds"]) if r["avg_seconds"] else 0}
+                for r in stage_rows
+            ]
+
+        return {
+            "total": total,
+            "done": done,
+            "failed": failed,
+            "cancelled": cancelled,
+            "processing": processing,
+            "pending": pending,
+            "success_rate": success_rate,
+            "avg_duration_seconds": avg_duration,
+            "daily_trend": daily_trend,
+            "stage_stats": stage_stats,
+        }
+
+    # ---- Task search ----
+
+    def list_tasks(
+        self,
+        page: int,
+        page_size: int,
+        status: str | None = None,
+        search: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> PageResult:
+        offset = max(page - 1, 0) * page_size
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if search:
+            conditions.append("file_path LIKE ?")
+            params.append(f"%{search}%")
+        if date_from:
+            conditions.append("created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("created_at <= ?")
+            params.append(date_to)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        if status in ("done", "failed"):
+            order_clause = "ORDER BY updated_at DESC, id DESC"
+        else:
+            order_clause = "ORDER BY parent_dir_ctime DESC, id DESC"
+
+        with self.connect() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM tasks {where_clause}",
+                params,
+            ).fetchone()[0]
+            status_rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM tasks
+                GROUP BY status
+                """
+            ).fetchall()
+            rows = connection.execute(
+                f"""
+                SELECT id, file_path, status, stage, progress, retry_count, max_retries, cancel_requested,
+                       restart_required, error_message, created_at, updated_at, started_at, finished_at
+                FROM tasks
+                {where_clause}
+                {order_clause}
+                LIMIT ? OFFSET ?
+                """,
+                [*params, page_size, offset],
+            ).fetchall()
+        return PageResult(
+            [
+                {
+                    **dict(row),
+                    "stage": normalize_stage_name(str(row["stage"])),
+                }
+                for row in rows
+            ],
+            page,
+            page_size,
+            total,
+            {str(row["status"]): int(row["count"]) for row in status_rows},
+        )
+
+    # ---- Batch operations ----
+
+    def batch_cancel(self, task_ids: list[int]) -> int:
+        if not task_ids:
+            return 0
+        placeholders = ",".join("?" * len(task_ids))
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE tasks SET cancel_requested = 1, updated_at = ?
+                WHERE id IN ({placeholders}) AND status = 'processing'
+                """,
+                [now, *task_ids],
+            )
+        return cursor.rowcount
+
+    def batch_delete(self, task_ids: list[int]) -> int:
+        if not task_ids:
+            return 0
+        placeholders = ",".join("?" * len(task_ids))
+        with self.connect() as connection:
+            connection.execute(
+                f"DELETE FROM task_logs WHERE task_id IN ({placeholders})",
+                task_ids,
+            )
+            cursor = connection.execute(
+                f"DELETE FROM tasks WHERE id IN ({placeholders})",
+                task_ids,
+            )
+        return cursor.rowcount
+
+    def batch_retry(self, task_ids: list[int]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for task_id in task_ids:
+            task = self.get_task(task_id)
+            if task and task["status"] in {"failed", "cancelled", "done"}:
+                cleanup_intermediates(Path(task["file_path"]))
+                cleanup_work_dir_intermediates(self._resolve_task_work_dir(task_id, task["config_snapshot"]))
+                with self.connect() as connection:
+                    connection.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'pending', stage = 'queued', progress = 0,
+                            cancel_requested = 0, error_message = NULL, result_payload = NULL,
+                            updated_at = ?, started_at = NULL, finished_at = NULL
+                        WHERE id = ? AND status IN ('failed', 'cancelled', 'done')
+                        """,
+                        (utc_now(), task_id),
+                    )
+                results.append({"id": task_id, "status": "pending"})
+            else:
+                results.append({"id": task_id, "status": "skipped"})
+        return results

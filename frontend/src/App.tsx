@@ -2,13 +2,28 @@ import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { getSystemStatus, SystemStatus } from './api'
+import { DashboardPage } from './pages/DashboardPage'
 import { ModelManagerPage } from './pages/ModelManagerPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SetupWizard } from './pages/SetupWizard'
 import { TaskDetailPage } from './pages/TaskDetailPage'
 import { TasksPage } from './pages/TasksPage'
 
+function useDarkMode() {
+  const [dark, setDark] = useState(() => {
+    const saved = localStorage.getItem('subpipeline-theme')
+    if (saved) return saved === 'dark'
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  })
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+    localStorage.setItem('subpipeline-theme', dark ? 'dark' : 'light')
+  }, [dark])
+  return { dark, toggle: () => setDark((v) => !v) }
+}
+
 function SidebarLayout() {
+  const { dark, toggle } = useDarkMode()
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -17,6 +32,9 @@ function SidebarLayout() {
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
             任务列表
           </NavLink>
+          <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
+            统计面板
+          </NavLink>
           <NavLink to="/models" className={({ isActive }) => (isActive ? 'active' : '')}>
             模型管理
           </NavLink>
@@ -24,10 +42,14 @@ function SidebarLayout() {
             设置
           </NavLink>
         </nav>
+        <button className="theme-toggle" onClick={toggle}>
+          {dark ? '☀️ 浅色' : '🌙 深色'}
+        </button>
       </aside>
       <main className="content">
         <Routes>
           <Route path="/" element={<TasksPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
           <Route path="/models" element={<ModelManagerPage />} />
           <Route path="/settings" element={<SettingsPage />} />

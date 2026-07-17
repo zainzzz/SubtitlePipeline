@@ -33,10 +33,27 @@ class ConfigUpdateRequest(BaseModel):
     subtitle: dict[str, Any] | None = None
     mux: dict[str, Any] | None = None
     logging: dict[str, Any] | None = None
+    notification: dict[str, Any] | None = None
+    schedule: dict[str, Any] | None = None
+    audio: dict[str, Any] | None = None
 
 
 class RetryRequest(BaseModel):
     mode: Literal["restart", "resume"] = "restart"
+
+
+class BatchRequest(BaseModel):
+    task_ids: list[int]
+    action: Literal["retry", "cancel", "delete"]
+
+
+class SubtitleUpdateRequest(BaseModel):
+    content: str
+
+
+class ConfigImportRequest(BaseModel):
+    config: dict[str, Any]
+    version: int = 1
 
 
 class TaskActionResponse(BaseModel):
@@ -162,9 +179,12 @@ def create_app() -> FastAPI:
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100),
         status: str | None = Query(None),
+        search: str | None = Query(None),
+        date_from: str | None = Query(None),
+        date_to: str | None = Query(None),
     ) -> dict[str, Any]:
         database = get_database(app)
-        result = database.list_tasks(page=page, page_size=page_size, status=status)
+        result = database.list_tasks(page=page, page_size=page_size, status=status, search=search, date_from=date_from, date_to=date_to)
         return {
             "items": result.items,
             "page": result.page,
@@ -431,6 +451,79 @@ def create_app() -> FastAPI:
         database = get_database(app)
         processed = WorkerService(database).process_next_task()
         return {"processed": processed}
+
+    # ---- Dashboard ----
+    @app.get("/api/dashboard/stats")
+    def get_dashboard_stats() -> dict[str, Any]:
+        database = get_database(app)
+        return database.get_dashboard_stats()
+
+    # ---- Batch operations ----
+    @app.post("/api/tasks/batch")
+    def batch_tasks(request: BatchRequest) -> dict[str, Any]:
+        database = get_database(app)
+        ids = request.task_ids
+        if not ids:
+            raise HTTPException(status_code=400, detail="task_ids is required")
+        if request.action == "retry":
+            results = database.batch_retry(ids)
+            return {"results": results}
+        elif request.action == "cancel":
+            count = database.batch_cancel(ids)
+            return {"cancelled": count}
+        elif request.action == "delete":
+            count = database.batch_delete(ids)
+            return {"deleted": count}
+        raise HTTPException(status_code=400, detail="unknown action")
+
+    # ---- Subtitle preview & edit ----
+    @app.get("/api/tasks/{task_id}/subtitle")
+    def get_task_subtitle(task_id: int) -> dict[str, Any]:
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        result_payload = task.get("result_payload")
+        if not result_payload or "subtitle_paths" not in result_payload:
+            raise HTTPException(status_code=404, detail="no subtitle files found for this task")
+        subtitle_path = result_payload["subtitle_paths"][0]
+        path = Path(subtitle_path)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="subtitle file not found on disk")
+        content = path.read_text(encoding="utf-8")
+        return {"content": content, "path": subtitle_path}
+
+    @app.put("/api/tasks/{task_id}/subtitle")
+    def update_task_subtitle(task_id: int, request: SubtitleUpdateRequest) -> dict[str, str]:
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        result_payload = task.get("result_payload")
+        if not result_payload or "subtitle_paths" not in result_payload:
+            raise HTTPException(status_code=404, detail="no subtitle files found for this task")
+        for subtitle_path in result_payload["subtitle_paths"]:
+            path = Path(subtitle_path)
+            if path.exists():
+                path.write_text(request.content, encoding="utf-8")
+        return {"status": "updated"}
+
+    # ---- Config import/export ----
+    @app.get("/api/config/export")
+    def export_config() -> dict[str, Any]:
+        database = get_database(app)
+        config = database.get_config()
+        config.pop("meta", None)
+        return {"config": config, "version": 1}
+
+    @app.post("/api/config/import")
+    def import_config(request: ConfigImportRequest) -> dict[str, Any]:
+        database = get_database(app)
+        payload = {k: v for k, v in request.config.items() if k != "meta"}
+        try:
+            return database.update_config(payload)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if frontend_dist.exists():
         assets_dir = frontend_dist / "assets"

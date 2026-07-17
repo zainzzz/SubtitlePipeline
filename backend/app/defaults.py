@@ -93,13 +93,30 @@ DEFAULT_CONFIG = {
     "logging": {
         "level": "INFO",
     },
+    "notification": {
+        "webhook_enabled": False,
+        "webhook_type": "jellyfin",  # jellyfin | emby | plex | generic
+        "webhook_url": "",
+        "webhook_token": "",  # Jellyfin/Emby API key or Plex token
+        "webhook_library_id": "",  # comma-separated library IDs (Jellyfin/Emby) or section IDs (Plex)
+    },
+    "schedule": {
+        "enabled": False,
+        "start_time": "00:00",  # HH:MM, 24h format
+        "end_time": "23:59",
+        "timezone": "Asia/Shanghai",
+    },
+    "audio": {
+        "prefer_languages": [],  # e.g. ["jpn", "eng"] — process each track in order
+        "track_selection_mode": "first",  # first | prefer | all
+    },
 }
 
 SYSTEM_LEVEL_FIELDS = {
     ("whisper", "model_name"),
 }
 
-RESULT_AFFECTING_GROUPS = {"file", "processing", "whisper", "translation", "subtitle", "mux"}
+RESULT_AFFECTING_GROUPS = {"file", "processing", "whisper", "translation", "subtitle", "mux", "audio"}
 STAGE_SEQUENCE = [
     "extract_audio",
     "run_asr",
