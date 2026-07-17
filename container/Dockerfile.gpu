@@ -1,19 +1,34 @@
-FROM nvidia/cuda:12.6.1-runtime-ubuntu22.04 AS frontend-build
-
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get update && apt-get install -y --no-install-recommends nodejs
+# ---------------------------------------------------------------------------
+# Stage 1: Frontend build — use the official Node.js image (same as CPU Dockerfile).
+#
+# Rationale: The previous Dockerfile.gpu built the frontend inside a
+# nvidia/cuda base image, installing Node.js from nodesource.  Using
+# node:22-bookworm instead:
+#   • Avoids downloading ~200 MB of CUDA dev tools just to run `npm ci`.
+#   • Reuses the exact same build environment as the CPU Dockerfile so the
+#     frontend artefacts are byte-identical across CPU and GPU images.
+#   • Speeds up builds thanks to Docker layer caching of the Node base image.
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm AS frontend-build
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.json frontend/tsconfig.node.json frontend/vite.config.ts frontend/index.html ./
 COPY frontend/src ./src
-RUN npm ci && npm run build
+# `npm install` (not `npm ci`) so optional platform-specific binaries (e.g.
+# @rollup/rollup-linux-arm64-gnu) resolve on the current platform even when
+# package-lock.json was generated on a different OS.
+RUN npm install --no-audit --no-fund && npm run build
 
-# Runtime stage uses the CUDA "runtime" Ubuntu image (not "devel"). The runtime
-# flavour ships the CUDA driver shim and libraries needed at inference time but
-# omits nvcc / headers. This keeps the final image smaller. If a future GPU
-# dependency requires compilation against CUDA headers during pip install,
-# insert a temporary "devel" builder stage (e.g. nvidia/cuda:12.6.1-devel-ubuntu22.04)
-# to build the wheel, then copy the wheel into the runtime stage.
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime — CUDA runtime image for GPU inference.
+#
+# The runtime flavour ships the CUDA driver shim and libraries needed at
+# inference time but omits nvcc / headers.  This keeps the final image
+# smaller.  If a future GPU dependency requires compilation against CUDA
+# headers during pip install, insert a temporary "devel" builder stage
+# (e.g. nvidia/cuda:12.6.1-devel-ubuntu22.04) to build the wheel, then copy
+# the wheel into the runtime stage.
+# ---------------------------------------------------------------------------
 FROM nvidia/cuda:12.6.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
