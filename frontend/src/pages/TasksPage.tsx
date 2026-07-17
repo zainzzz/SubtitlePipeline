@@ -178,7 +178,7 @@ export function TasksPage() {
           <h3>添加任务（手动）</h3>
           <p className="muted">跳过扫描，手动指定视频文件立即加入队列。文件必须位于允许浏览的目录内。</p>
           <div className="manual-task-row">
-            <DirectoryPicker value={manualPath} onChange={setManualPath} disabled={manualLoading} placeholder="/data/movies/foo.mp4" />
+            <DirectoryPicker mode="file" value={manualPath} onChange={setManualPath} disabled={manualLoading} placeholder="选择或输入视频文件路径" />
             <button onClick={() => void handleManualSubmit()} disabled={manualLoading || !manualPath.trim()} type="button">
               {manualLoading ? '提交中…' : '加入队列'}
             </button>

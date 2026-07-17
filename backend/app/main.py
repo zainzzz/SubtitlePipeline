@@ -267,18 +267,37 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/browse")
-    def browse_directory(path: str | None = Query(None)) -> dict[str, Any]:
+    def browse_directory(
+        path: str | None = Query(None),
+        mode: str = Query("directory", pattern="^(directory|file|both)$"),
+    ) -> dict[str, Any]:
         target_path, roots = resolve_browse_target(path)
         if not target_path.exists():
             raise HTTPException(status_code=404, detail="目录不存在")
         if not target_path.is_dir():
             raise HTTPException(status_code=400, detail="请求路径不是目录")
         parent = target_path.parent if any(is_within_root(target_path.parent, root) for root in roots) else None
-        dirs = sorted(item.name for item in target_path.iterdir() if item.is_dir())
+        entries = list(target_path.iterdir())
+        dirs = sorted(item.name for item in entries if item.is_dir())
+        files: list[dict[str, Any]] = []
+        if mode in ("file", "both"):
+            config = get_database(app).get_config()
+            allowed = {
+                ext.lower() for ext in config["file"].get("allowed_extensions", [])
+            } or {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".m4v"}
+            for item in sorted(entries, key=lambda i: i.name.lower()):
+                if item.is_file() and item.suffix.lower() in allowed:
+                    stat = item.stat()
+                    files.append({
+                        "name": item.name,
+                        "size_bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                    })
         return {
             "current": str(target_path),
             "parent": str(parent) if parent is not None else None,
             "dirs": dirs,
+            "files": files,
         }
 
     @app.get("/api/system/status")
@@ -485,23 +504,22 @@ def create_app() -> FastAPI:
     # ---- Process health check ----
     @app.get("/api/system/process-health")
     def get_process_health() -> dict[str, Any]:
-        import subprocess as sp
-        result: dict[str, Any] = {}
-        try:
-            ps = sp.run(["pgrep", "-f", "scanner_process"], capture_output=True, text=True, timeout=5)
-            result["scanner"] = {"running": ps.returncode == 0, "pid": ps.stdout.strip() or None}
-        except Exception:
-            result["scanner"] = {"running": False, "pid": None}
-        try:
-            ps = sp.run(["pgrep", "-f", "worker_process"], capture_output=True, text=True, timeout=5)
-            result["worker"] = {"running": ps.returncode == 0, "pid": ps.stdout.strip() or None}
-        except Exception:
-            result["worker"] = {"running": False, "pid": None}
-        try:
-            ps = sp.run(["pgrep", "-f", "api_server"], capture_output=True, text=True, timeout=5)
-            result["api"] = {"running": ps.returncode == 0, "pid": ps.stdout.strip() or None}
-        except Exception:
-            result["api"] = {"running": False, "pid": None}
+        from pathlib import Path as _Path
+        result: dict[str, Any] = {"scanner": {"running": False, "pid": None}, "worker": {"running": False, "pid": None}, "api": {"running": False, "pid": None}}
+        for entry in _Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore")
+            except (OSError, FileNotFoundError):
+                continue
+            pid = entry.name
+            if "app.api_server" in cmdline and "sh" not in cmdline[:3]:
+                result["api"] = {"running": True, "pid": pid}
+            elif "app.scanner_process" in cmdline:
+                result["scanner"] = {"running": True, "pid": pid}
+            elif "app.worker_process" in cmdline:
+                result["worker"] = {"running": True, "pid": pid}
         result["sse_subscribers"] = get_event_bus().subscriber_count()
         result["all_healthy"] = result["scanner"]["running"] and result["worker"]["running"] and result["api"]["running"]
         return result

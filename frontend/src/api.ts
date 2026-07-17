@@ -208,6 +208,7 @@ export type BrowseDirectoryResponse = {
   current: string
   parent?: string | null
   dirs: string[]
+  files?: Array<{ name: string; size_bytes: number; mtime: number }>
 }
 
 export const translationContentTypeOptions: Array<{ value: TranslationContentType; label: string }> = [
@@ -450,8 +451,11 @@ export function setScanEnabled(enabled: boolean): Promise<ScanStatus> {
   })
 }
 
-export function browseDirectory(path?: string): Promise<BrowseDirectoryResponse> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+export function browseDirectory(path?: string, mode: 'directory' | 'file' | 'both' = 'directory'): Promise<BrowseDirectoryResponse> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (mode !== 'directory') params.set('mode', mode)
+  const query = params.toString() ? `?${params.toString()}` : ''
   return request<BrowseDirectoryResponse>(`/api/browse${query}`)
 }
 

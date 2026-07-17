@@ -831,13 +831,20 @@ textarea {
 .dialog-card {
   width: min(720px, 100%);
   max-height: min(80vh, 720px);
-  overflow: auto;
   background: #fff;
   border-radius: 20px;
   padding: 24px;
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.2);
   display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
   gap: 16px;
+  overflow: hidden;
+}
+
+.directory-browser-list {
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 50vh;
 }
 
 .directory-entry {
@@ -845,6 +852,34 @@ textarea {
   background: #f8fbff;
   color: #1e293b;
   border: 1px solid #dbeafe;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+}
+
+.directory-entry-selected {
+  background: #dbeafe;
+  border-color: #2563eb;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.directory-entry .file-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+}
+
+.directory-entry .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-entry .file-size {
+  flex-shrink: 0;
+  font-size: 12px;
 }
 
 .directory-entry:hover:not(:disabled) {
