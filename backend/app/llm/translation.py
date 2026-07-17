@@ -394,9 +394,16 @@ class ChunkedTranslator:
                     except TranslationRateLimitError as exc:
                         attempts[chunk.start_index] += 1
                         if attempts[chunk.start_index] > MAX_CHUNK_RETRIES:
-                            raise PipelineError(f"分块翻译多次触发限流: {exc}") from exc
+                            # Preserve TranslationRateLimitError type so callers can
+                            # isinstance-check and apply rate-limit-specific backoff.
+                            raise TranslationRateLimitError(f"分块翻译多次触发限流: {exc}") from exc
                         rate_limited.append(chunk)
                         max_wait = max(max_wait, 2 ** (attempts[chunk.start_index] - 1))
+                    except PipelineError:
+                        # Already a PipelineError (or subclass like
+                        # TranslationRateLimitError) — re-raise as-is to preserve
+                        # the original exception type for isinstance checks.
+                        raise
                     except Exception as exc:
                         raise PipelineError(str(exc)) from exc
                     else:

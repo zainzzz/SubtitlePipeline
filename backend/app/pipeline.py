@@ -8,11 +8,16 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.segment_cleaner import clean_segments
 
+if TYPE_CHECKING:
+    from app.store import Database
+
 logger = logging.getLogger(__name__)
+
+FFMPEG_TIMEOUT_SECONDS = 7200
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +191,7 @@ def _read_json(path: Path) -> Any:
 
 def _run_ffmpeg(command: list[str], timeout_message: str, failure_message: str) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=7200)
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=FFMPEG_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise PipelineError(timeout_message) from exc
     if result.returncode != 0:
@@ -220,7 +225,7 @@ def extract_audio(context: TaskContext) -> Path:
         str(whisper_config["sample_rate"]),
         str(audio_path),
     ]
-    _run_ffmpeg(command, "音频提取超时，FFmpeg 执行超过 7200 秒", "ffmpeg 执行失败")
+    _run_ffmpeg(command, f"音频提取超时，FFmpeg 执行超过 {FFMPEG_TIMEOUT_SECONDS} 秒", "ffmpeg 执行失败")
     return audio_path
 
 
@@ -389,7 +394,7 @@ def translate_segments(
     context: TaskContext,
     segments: list[dict[str, Any]],
     progress_callback=None,
-    database: Any = None,
+    database: Database | None = None,
 ) -> dict[str, list[str]]:
     translation_config = context.config_snapshot["translation"]
     if not translation_config["enabled"]:
@@ -432,6 +437,8 @@ def translate_segments(
             except Exception as exc:
                 last_error = exc
         if last_error is not None:
+            if isinstance(last_error, PipelineError):
+                raise last_error
             raise PipelineError(str(last_error))
     return translations
 
@@ -634,7 +641,7 @@ def mux_subtitle(context: TaskContext, subtitle_paths: list[str]) -> str:
         )
     output_path = _resolve_mux_output_path(context)
     command.append(str(output_path))
-    _run_ffmpeg(command, "字幕封装超时，FFmpeg 执行超过 7200 秒", "ffmpeg 字幕封装失败")
+    _run_ffmpeg(command, f"字幕封装超时，FFmpeg 执行超过 {FFMPEG_TIMEOUT_SECONDS} 秒", "ffmpeg 字幕封装失败")
     return str(output_path)
 
 
