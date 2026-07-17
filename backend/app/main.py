@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,10 +9,11 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .event_bus import get_event_bus
 from .logging_utils import setup_logging
 from .model_manager import (
     DEFAULT_PROVIDER,
@@ -67,6 +70,10 @@ class TranslationTestRequest(BaseModel):
 
 class SetupCompleteRequest(BaseModel):
     setup_complete: bool = True
+
+
+class ManualTaskRequest(BaseModel):
+    file_path: str
 
 
 def get_proxy_status() -> dict[str, str | None]:
@@ -431,6 +438,73 @@ def create_app() -> FastAPI:
         database = get_database(app)
         processed = WorkerService(database).process_next_task()
         return {"processed": processed}
+
+    # ---- SSE ----
+    @app.get("/api/events")
+    async def sse_events():
+        bus = get_event_bus()
+        q = bus.subscribe()
+
+        async def event_stream():
+            try:
+                yield f"data: {json.dumps({'type': 'connected', 'timestamp': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()})}\n\n"
+                while True:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=30)
+                        yield f"data: {json.dumps(event)}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+            finally:
+                bus.unsubscribe(q)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    # ---- Manual task creation ----
+    @app.post("/api/tasks/manual")
+    def create_manual_task(request: ManualTaskRequest) -> dict[str, Any]:
+        database = get_database(app)
+        file_path = request.file_path.strip()
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        path = Path(file_path)
+        if not path.is_absolute():
+            raise HTTPException(status_code=400, detail="file_path must be absolute")
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="file not found")
+        roots = resolve_browse_roots()
+        if not any(is_within_root(path.resolve(), root) for root in roots):
+            raise HTTPException(status_code=403, detail="file is not within allowed directories")
+        stat = path.stat()
+        observed = database.observe_file(str(path), int(stat.st_size), float(stat.st_mtime))
+        path_key = observed["path_key"]
+        if database.has_active_task(path_key):
+            raise HTTPException(status_code=409, detail="task already exists for this file")
+        task = database.create_task(observed["file_id"], observed["path"], observed["size_bytes"], observed["mtime"])
+        return {"task": task}
+
+    # ---- Process health check ----
+    @app.get("/api/system/process-health")
+    def get_process_health() -> dict[str, Any]:
+        import subprocess as sp
+        result: dict[str, Any] = {}
+        try:
+            ps = sp.run(["pgrep", "-f", "scanner_process"], capture_output=True, text=True, timeout=5)
+            result["scanner"] = {"running": ps.returncode == 0, "pid": ps.stdout.strip() or None}
+        except Exception:
+            result["scanner"] = {"running": False, "pid": None}
+        try:
+            ps = sp.run(["pgrep", "-f", "worker_process"], capture_output=True, text=True, timeout=5)
+            result["worker"] = {"running": ps.returncode == 0, "pid": ps.stdout.strip() or None}
+        except Exception:
+            result["worker"] = {"running": False, "pid": None}
+        try:
+            ps = sp.run(["pgrep", "-f", "api_server"], capture_output=True, text=True, timeout=5)
+            result["api"] = {"running": ps.returncode == 0, "pid": ps.stdout.strip() or None}
+        except Exception:
+            result["api"] = {"running": False, "pid": None}
+        result["sse_subscribers"] = get_event_bus().subscriber_count()
+        result["all_healthy"] = result["scanner"]["running"] and result["worker"]["running"] and result["api"]["running"]
+        return result
 
     if frontend_dist.exists():
         assets_dir = frontend_dist / "assets"

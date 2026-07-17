@@ -1135,3 +1135,20 @@ textarea {
   background: linear-gradient(135deg, #2563eb, #3b82f6);
 }
 
+.manual-task-card {
+  margin-bottom: 16px;
+}
+.manual-task-card h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.manual-task-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 8px;
+}
+.manual-task-row > :first-child {
+  flex: 1;
+}
+

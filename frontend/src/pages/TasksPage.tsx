@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { cancelTask, checkResumeFeasibility, deleteTask, getScanStatus, getTasks, ResumeCheckResponse, retryTask, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
-import { usePolling } from '../hooks'
+import { cancelTask, checkResumeFeasibility, createManualTask, deleteTask, getScanStatus, getTasks, retryTask, ResumeCheckResponse, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
+import { useEventStream, usePolling } from '../hooks'
+import { DirectoryPicker } from '../components/DirectoryPicker'
 
 const PAGE_SIZE = 20
 
@@ -37,7 +38,15 @@ export function TasksPage() {
   const [activeTab, setActiveTab] = useState<TaskTab>('all')
   const [currentPage, setCurrentPage] = useState(1)
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
+  const [manualPath, setManualPath] = useState('')
+  const [manualError, setManualError] = useState('')
+  const [manualLoading, setManualLoading] = useState(false)
+  const [showManualPicker, setShowManualPicker] = useState(false)
   const navigate = useNavigate()
+
+  useEventStream('/api/events', () => {
+    void load({ quiet: true })
+  }, [])
 
   // 仅在 tab 切换或手动刷新时做 resume feasibility 检查，不再每 3 秒轮询中重复触发
   const load = useCallback(async (opts: { checkResume?: boolean; quiet?: boolean } = {}) => {
@@ -111,6 +120,23 @@ export function TasksPage() {
     }
   }
 
+  const handleManualSubmit = async () => {
+    const trimmed = manualPath.trim()
+    if (!trimmed) return
+    setManualLoading(true)
+    setManualError('')
+    try {
+      await createManualTask(trimmed)
+      setManualPath('')
+      setShowManualPicker(false)
+      await load({ quiet: true })
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : '添加失败')
+    } finally {
+      setManualLoading(false)
+    }
+  }
+
   const toggleScan = async () => {
     if (scanStatus === null) return
     try {
@@ -128,13 +154,16 @@ export function TasksPage() {
       <header className="page-header">
         <div>
           <h1>任务列表</h1>
-          <p>轮询刷新当前任务状态、阶段和进度。</p>
+          <p>实时推送任务状态、阶段和进度。</p>
         </div>
         <div className="header-actions">
           <span className={`scan-badge ${scanStatus === null ? 'scan-paused' : scanStatus?.scan_enabled ? 'scan-running' : 'scan-paused'}`}>
             {scanStatus === null ? '○ 扫描加载中' : scanStatus?.scan_enabled ? '● 扫描运行中' : '○ 扫描已暂停'}
             {scanStatus?.throttled ? ' · 限流中' : ''}
           </span>
+          <button onClick={() => setShowManualPicker((v) => !v)} type="button">
+            {showManualPicker ? '取消添加' : '+ 添加任务'}
+          </button>
           <button disabled={scanStatus === null} onClick={() => void toggleScan()}>
             {scanStatus === null ? '加载中' : scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
           </button>
@@ -144,6 +173,19 @@ export function TasksPage() {
         </div>
       </header>
       {error ? <div className="alert error">{error}</div> : null}
+      {showManualPicker ? (
+        <div className="card manual-task-card">
+          <h3>添加任务（手动）</h3>
+          <p className="muted">跳过扫描，手动指定视频文件立即加入队列。文件必须位于允许浏览的目录内。</p>
+          <div className="manual-task-row">
+            <DirectoryPicker value={manualPath} onChange={setManualPath} disabled={manualLoading} placeholder="/data/movies/foo.mp4" />
+            <button onClick={() => void handleManualSubmit()} disabled={manualLoading || !manualPath.trim()} type="button">
+              {manualLoading ? '提交中…' : '加入队列'}
+            </button>
+          </div>
+          {manualError ? <div className="alert error">{manualError}</div> : null}
+        </div>
+      ) : null}
       <div className="card">
         <div className="task-toolbar">
           <div className="tab-row">

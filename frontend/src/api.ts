@@ -492,3 +492,24 @@ export function deleteModel(name: string): Promise<{ message: string }> {
 export function activateModel(name: string): Promise<{ message: string; config: AppConfig }> {
   return request<{ message: string; config: AppConfig }>(`/api/models/${name}/activate`, { method: 'POST' })
 }
+
+// ---- Manual task creation ----
+export function createManualTask(filePath: string): Promise<{ task: Task }> {
+  return request<{ task: Task }>('/api/tasks/manual', {
+    method: 'POST',
+    body: JSON.stringify({ file_path: filePath }),
+  })
+}
+
+// ---- Process health check ----
+export type ProcessHealth = {
+  scanner: { running: boolean; pid: string | null }
+  worker: { running: boolean; pid: string | null }
+  api: { running: boolean; pid: string | null }
+  sse_subscribers: number
+  all_healthy: boolean
+}
+
+export function getProcessHealth(): Promise<ProcessHealth> {
+  return request<ProcessHealth>('/api/system/process-health')
+}
