@@ -49,6 +49,7 @@ export default function App() {
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [fatalError, setFatalError] = useState<string>('')
   const location = useLocation()
 
   const [events, setEvents] = useState<SseEvent[]>([])
@@ -58,6 +59,19 @@ export default function App() {
       return next.length > 200 ? next.slice(-200) : next
     })
   })
+
+  // Fatal-error banner: fed by global window.error/unhandledrejection handlers
+  // in main.tsx and by ErrorBoundary via the `app:fatal-error` CustomEvent.
+  useEffect(() => {
+    const onFatal = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { source?: string; message?: string } | undefined
+      const source = detail?.source ?? 'unknown'
+      const message = detail?.message ?? '发生未知错误'
+      setFatalError(`[${source}] ${message}`)
+    }
+    window.addEventListener('app:fatal-error', onFatal as EventListener)
+    return () => window.removeEventListener('app:fatal-error', onFatal as EventListener)
+  }, [])
 
   const loadStatus = async () => {
     setLoading(true)
@@ -108,6 +122,12 @@ export default function App() {
   const ctx: EventContextValue = { events, lastEvent: events.length ? events[events.length - 1] : null }
   return (
     <EventContext.Provider value={ctx}>
+      {fatalError ? (
+        <div className="fatal-error-banner" role="alert" aria-live="assertive">
+          <span>{fatalError}</span>
+          <button aria-label="关闭致命错误提示" onClick={() => setFatalError('')}>×</button>
+        </div>
+      ) : null}
       <SidebarLayout />
     </EventContext.Provider>
   )
