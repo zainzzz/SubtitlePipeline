@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { browseDirectory, BrowseDirectoryResponse } from '../api'
 
@@ -84,6 +85,76 @@ export function DirectoryPicker({
     }
   }
 
+  const dialog = open ? (
+    <div className="dialog-backdrop" role="presentation" onClick={() => setOpen(false)}>
+      <div className="dialog-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="card-header">
+          <div>
+            <h3>{isFileMode ? '选择视频文件' : '选择目录'}</h3>
+            <p className="muted">{browser?.current || '加载中…'}</p>
+          </div>
+          <button type="button" className="text-button" onClick={() => setOpen(false)}>
+            关闭
+          </button>
+        </div>
+        {error ? <div className="alert error">{error}</div> : null}
+        <div className="directory-browser-toolbar">
+          <button type="button" className="ghost-button" disabled={loading || !browser?.parent} onClick={() => void load(browser?.parent || undefined)}>
+            上一级
+          </button>
+          {isFileMode ? (
+            <button type="button" disabled={!selectedFile} onClick={handleSelect}>
+              选择当前路径
+            </button>
+          ) : (
+            <button type="button" disabled={loading || !browser?.current} onClick={handleSelect}>
+              选择此目录
+            </button>
+          )}
+        </div>
+        <div className="directory-browser-list">
+          {loading ? <div className="muted">目录加载中…</div> : null}
+          {!loading && (browser?.dirs.length ?? 0) === 0 && (browser?.files?.length ?? 0) === 0 ? (
+            <div className="muted">当前目录为空</div>
+          ) : null}
+          {!loading
+            ? browser?.dirs.map((name) => {
+                const nextPath = browser.current ? joinPath(browser.current, name) : name
+                return (
+                  <button key={nextPath} type="button" className="directory-entry" onClick={() => void load(nextPath)}>
+                    📁 {name}
+                  </button>
+                )
+              })
+            : null}
+          {isFileMode && !loading
+            ? browser?.files?.map((file) => {
+                const fullPath = browser.current ? joinPath(browser.current, file.name) : file.name
+                const isSelected = selectedFile === fullPath
+                return (
+                  <button
+                    key={fullPath}
+                    type="button"
+                    className={isSelected ? 'directory-entry directory-entry-selected' : 'directory-entry'}
+                    onClick={() => setSelectedFile(fullPath)}
+                  >
+                    <span className="file-icon">🎬</span>
+                    <span className="file-name">{file.name}</span>
+                    <span className="file-size muted">{formatBytes(file.size_bytes)}</span>
+                  </button>
+                )
+              })
+            : null}
+        </div>
+        <div className="page-actions">
+          <button type="button" className="ghost-button" onClick={() => setOpen(false)}>
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null
+
   return (
     <div className="directory-picker">
       {label ? <span>{label}</span> : null}
@@ -93,75 +164,7 @@ export function DirectoryPicker({
           浏览
         </button>
       </div>
-      {open ? (
-        <div className="dialog-backdrop" role="presentation" onClick={() => setOpen(false)}>
-          <div className="dialog-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-            <div className="card-header">
-              <div>
-                <h3>{isFileMode ? '选择视频文件' : '选择目录'}</h3>
-                <p className="muted">{browser?.current || '加载中…'}</p>
-              </div>
-              <button type="button" className="text-button" onClick={() => setOpen(false)}>
-                关闭
-              </button>
-            </div>
-            {error ? <div className="alert error">{error}</div> : null}
-            <div className="directory-browser-toolbar">
-              <button type="button" className="ghost-button" disabled={loading || !browser?.parent} onClick={() => void load(browser?.parent || undefined)}>
-                上一级
-              </button>
-              {isFileMode ? (
-                <button type="button" disabled={!selectedFile} onClick={handleSelect}>
-                  选择当前路径
-                </button>
-              ) : (
-                <button type="button" disabled={loading || !browser?.current} onClick={handleSelect}>
-                  选择此目录
-                </button>
-              )}
-            </div>
-            <div className="directory-browser-list">
-              {loading ? <div className="muted">目录加载中…</div> : null}
-              {!loading && (browser?.dirs.length ?? 0) === 0 && (browser?.files?.length ?? 0) === 0 ? (
-                <div className="muted">当前目录为空</div>
-              ) : null}
-              {!loading
-                ? browser?.dirs.map((name) => {
-                    const nextPath = browser.current ? joinPath(browser.current, name) : name
-                    return (
-                      <button key={nextPath} type="button" className="directory-entry" onClick={() => void load(nextPath)}>
-                        📁 {name}
-                      </button>
-                    )
-                  })
-                : null}
-              {isFileMode && !loading
-                ? browser?.files?.map((file) => {
-                    const fullPath = browser.current ? joinPath(browser.current, file.name) : file.name
-                    const isSelected = selectedFile === fullPath
-                    return (
-                      <button
-                        key={fullPath}
-                        type="button"
-                        className={isSelected ? 'directory-entry directory-entry-selected' : 'directory-entry'}
-                        onClick={() => setSelectedFile(fullPath)}
-                      >
-                        <span className="file-icon">🎬</span>
-                        <span className="file-name">{file.name}</span>
-                        <span className="file-size muted">{formatBytes(file.size_bytes)}</span>
-                      </button>
-                    )
-                  })
-                : null}
-            </div>
-            <div className="page-actions">
-              <button type="button" className="ghost-button" onClick={() => setOpen(false)}>
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {dialog ? createPortal(dialog, document.body) : null}
     </div>
   )
 }
