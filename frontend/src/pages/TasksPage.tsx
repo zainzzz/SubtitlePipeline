@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { batchTasks, cancelTask, checkResumeFeasibility, deleteTask, getScanStatus, getTasks, retryTask, ResumeCheckResponse, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
-import { usePolling } from '../hooks'
+import { batchTasks, cancelTask, checkResumeFeasibility, createManualTask, deleteTask, getScanStatus, getTasks, retryTask, ResumeCheckResponse, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
+import { useEventStream, usePolling } from '../hooks'
+import { DirectoryPicker } from '../components/DirectoryPicker'
 
 const PAGE_SIZE = 20
 
@@ -39,6 +40,10 @@ export function TasksPage() {
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [manualPath, setManualPath] = useState('')
+  const [manualError, setManualError] = useState('')
+  const [manualLoading, setManualLoading] = useState(false)
+  const [showManualPicker, setShowManualPicker] = useState(false)
   const navigate = useNavigate()
 
   const load = useCallback(async (opts: { checkResume?: boolean; quiet?: boolean } = {}) => {
@@ -79,6 +84,10 @@ export function TasksPage() {
     }
   }, [activeTab, currentPage, searchQuery])
 
+  useEventStream('/api/events', () => {
+    void load({ quiet: true })
+  }, [])
+
   usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage, searchQuery])
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
@@ -112,6 +121,23 @@ export function TasksPage() {
       await load({ checkResume: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '任务操作失败')
+    }
+  }
+
+  const handleManualSubmit = async () => {
+    const trimmed = manualPath.trim()
+    if (!trimmed) return
+    setManualLoading(true)
+    setManualError('')
+    try {
+      await createManualTask(trimmed)
+      setManualPath('')
+      setShowManualPicker(false)
+      await load({ quiet: true })
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : '添加失败')
+    } finally {
+      setManualLoading(false)
     }
   }
 
@@ -162,13 +188,16 @@ export function TasksPage() {
       <header className="page-header">
         <div>
           <h1>任务列表</h1>
-          <p>轮询刷新当前任务状态、阶段和进度。</p>
+          <p>实时推送任务状态、阶段和进度。</p>
         </div>
         <div className="header-actions">
           <span className={`scan-badge ${scanStatus === null ? 'scan-paused' : scanStatus?.scan_enabled ? 'scan-running' : 'scan-paused'}`}>
             {scanStatus === null ? '○ 扫描加载中' : scanStatus?.scan_enabled ? '● 扫描运行中' : '○ 扫描已暂停'}
             {scanStatus?.throttled ? ' · 限流中' : ''}
           </span>
+          <button onClick={() => setShowManualPicker((v) => !v)} type="button">
+            {showManualPicker ? '取消添加' : '+ 添加任务'}
+          </button>
           <button disabled={scanStatus === null} onClick={() => void toggleScan()}>
             {scanStatus === null ? '加载中' : scanStatus?.scan_enabled ? '暂停扫描' : '启动扫描'}
           </button>
@@ -178,6 +207,19 @@ export function TasksPage() {
         </div>
       </header>
       {error ? <div className="alert error">{error}</div> : null}
+      {showManualPicker ? (
+        <div className="card manual-task-card">
+          <h3>添加任务（手动）</h3>
+          <p className="muted">跳过扫描，手动指定视频文件立即加入队列。文件必须位于允许浏览的目录内。</p>
+          <div className="manual-task-row">
+            <DirectoryPicker mode="file" value={manualPath} onChange={setManualPath} disabled={manualLoading} placeholder="选择或输入视频文件路径" />
+            <button onClick={() => void handleManualSubmit()} disabled={manualLoading || !manualPath.trim()} type="button">
+              {manualLoading ? '提交中…' : '加入队列'}
+            </button>
+          </div>
+          {manualError ? <div className="alert error">{manualError}</div> : null}
+        </div>
+      ) : null}
       <div className="card">
         <div className="search-row">
           <input

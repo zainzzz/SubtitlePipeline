@@ -225,6 +225,7 @@ export type BrowseDirectoryResponse = {
   current: string
   parent?: string | null
   dirs: string[]
+  files?: Array<{ name: string; size_bytes: number; mtime: number }>
 }
 
 export const translationContentTypeOptions: Array<{ value: TranslationContentType; label: string }> = [
@@ -473,8 +474,11 @@ export function setScanEnabled(enabled: boolean): Promise<ScanStatus> {
   })
 }
 
-export function browseDirectory(path?: string): Promise<BrowseDirectoryResponse> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+export function browseDirectory(path?: string, mode: 'directory' | 'file' | 'both' = 'directory'): Promise<BrowseDirectoryResponse> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (mode !== 'directory') params.set('mode', mode)
+  const query = params.toString() ? `?${params.toString()}` : ''
   return request<BrowseDirectoryResponse>(`/api/browse${query}`)
 }
 
@@ -586,4 +590,25 @@ export function getTasks(
   if (dateFrom) params.set('date_from', dateFrom)
   if (dateTo) params.set('date_to', dateTo)
   return request<TaskListResponse>(`/api/tasks?${params.toString()}`)
+}
+
+// ---- Manual task creation ----
+export function createManualTask(filePath: string): Promise<{ task: Task }> {
+  return request<{ task: Task }>('/api/tasks/manual', {
+    method: 'POST',
+    body: JSON.stringify({ file_path: filePath }),
+  })
+}
+
+// ---- Process health check ----
+export type ProcessHealth = {
+  scanner: { running: boolean; pid: string | null }
+  worker: { running: boolean; pid: string | null }
+  api: { running: boolean; pid: string | null }
+  sse_subscribers: number
+  all_healthy: boolean
+}
+
+export function getProcessHealth(): Promise<ProcessHealth> {
+  return request<ProcessHealth>('/api/system/process-health')
 }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,10 +9,11 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .event_bus import get_event_bus
 from .logging_utils import setup_logging
 from .model_manager import (
     DEFAULT_PROVIDER,
@@ -84,6 +87,10 @@ class TranslationTestRequest(BaseModel):
 
 class SetupCompleteRequest(BaseModel):
     setup_complete: bool = True
+
+
+class ManualTaskRequest(BaseModel):
+    file_path: str
 
 
 def get_proxy_status() -> dict[str, str | None]:
@@ -280,18 +287,37 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/browse")
-    def browse_directory(path: str | None = Query(None)) -> dict[str, Any]:
+    def browse_directory(
+        path: str | None = Query(None),
+        mode: str = Query("directory", pattern="^(directory|file|both)$"),
+    ) -> dict[str, Any]:
         target_path, roots = resolve_browse_target(path)
         if not target_path.exists():
             raise HTTPException(status_code=404, detail="目录不存在")
         if not target_path.is_dir():
             raise HTTPException(status_code=400, detail="请求路径不是目录")
         parent = target_path.parent if any(is_within_root(target_path.parent, root) for root in roots) else None
-        dirs = sorted(item.name for item in target_path.iterdir() if item.is_dir())
+        entries = list(target_path.iterdir())
+        dirs = sorted(item.name for item in entries if item.is_dir())
+        files: list[dict[str, Any]] = []
+        if mode in ("file", "both"):
+            config = get_database(app).get_config()
+            allowed = {
+                ext.lower() for ext in config["file"].get("allowed_extensions", [])
+            } or {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".m4v"}
+            for item in sorted(entries, key=lambda i: i.name.lower()):
+                if item.is_file() and item.suffix.lower() in allowed:
+                    stat = item.stat()
+                    files.append({
+                        "name": item.name,
+                        "size_bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                    })
         return {
             "current": str(target_path),
             "parent": str(parent) if parent is not None else None,
             "dirs": dirs,
+            "files": files,
         }
 
     @app.get("/api/system/status")
@@ -524,6 +550,72 @@ def create_app() -> FastAPI:
             return database.update_config(payload)
         except KeyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # ---- SSE ----
+    @app.get("/api/events")
+    async def sse_events():
+        bus = get_event_bus()
+        q = bus.subscribe()
+
+        async def event_stream():
+            try:
+                yield f"data: {json.dumps({'type': 'connected', 'timestamp': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()})}\n\n"
+                while True:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=30)
+                        yield f"data: {json.dumps(event)}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+            finally:
+                bus.unsubscribe(q)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    # ---- Manual task creation ----
+    @app.post("/api/tasks/manual")
+    def create_manual_task(request: ManualTaskRequest) -> dict[str, Any]:
+        database = get_database(app)
+        file_path = request.file_path.strip()
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        path = Path(file_path)
+        if not path.is_absolute():
+            raise HTTPException(status_code=400, detail="file_path must be absolute")
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="file not found")
+        roots = resolve_browse_roots()
+        if not any(is_within_root(path.resolve(), root) for root in roots):
+            raise HTTPException(status_code=403, detail="file is not within allowed directories")
+        stat = path.stat()
+        observed = database.observe_file(str(path), int(stat.st_size), float(stat.st_mtime))
+        path_key = observed["path_key"]
+        if database.has_active_task(path_key):
+            raise HTTPException(status_code=409, detail="task already exists for this file")
+        task = database.create_task(observed["file_id"], observed["path"], observed["size_bytes"], observed["mtime"])
+        return {"task": task}
+
+    # ---- Process health check ----
+    @app.get("/api/system/process-health")
+    def get_process_health() -> dict[str, Any]:
+        from pathlib import Path as _Path
+        result: dict[str, Any] = {"scanner": {"running": False, "pid": None}, "worker": {"running": False, "pid": None}, "api": {"running": False, "pid": None}}
+        for entry in _Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore")
+            except (OSError, FileNotFoundError):
+                continue
+            pid = entry.name
+            if "app.api_server" in cmdline and "sh" not in cmdline[:3]:
+                result["api"] = {"running": True, "pid": pid}
+            elif "app.scanner_process" in cmdline:
+                result["scanner"] = {"running": True, "pid": pid}
+            elif "app.worker_process" in cmdline:
+                result["worker"] = {"running": True, "pid": pid}
+        result["sse_subscribers"] = get_event_bus().subscriber_count()
+        result["all_healthy"] = result["scanner"]["running"] and result["worker"]["running"] and result["api"]["running"]
+        return result
 
     if frontend_dist.exists():
         assets_dir = frontend_dist / "assets"

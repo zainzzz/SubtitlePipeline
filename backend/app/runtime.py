@@ -40,6 +40,7 @@ from .pipeline import (
     WhisperModelCache,
 )
 from .store import Database
+from .event_bus import emit
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".m4v"}
@@ -114,7 +115,6 @@ class ScannerService:
         max_size_bytes = int(file_config["max_size_mb"]) * 1024 * 1024
         max_pending_tasks = int(file_config.get("max_pending_tasks", 100))
         pending_count = self.database.count_tasks_by_status("pending")
-        # backpressure: pending 堆积过多则本轮跳过入队，等 worker 消化后再扫
         if pending_count >= max_pending_tasks:
             logger.info(
                 "backpressure: pending=%d >= max_pending_tasks=%d，本轮跳过扫描",
@@ -132,9 +132,8 @@ class ScannerService:
         queued = 0
         skipped = 0
         throttled = False
-        # 收集所有 root 的文件（支持多文件夹扫描），按文件夹创建时间（新→旧）和深度（外→内）排序
-        root_of: dict[str, Path] = {}
         all_files: list[Path] = []
+        root_of: dict[str, Path] = {}
         for root in roots:
             for p in root.rglob("*"):
                 if p.is_file():
@@ -149,9 +148,9 @@ class ScannerService:
                 return 0.0
 
         def _sort_key(p: Path):
-            root = root_of[str(p)]
-            depth = len(p.parts) - len(root.parts) - 1     # 外层优先 (小 → 大)
-            parent_ctime = _dir_ctime(str(p.parent))        # 新建优先 (大 → 小)
+            root = root_of.get(str(p), roots[0])
+            depth = len(p.parts) - len(root.parts) - 1
+            parent_ctime = _dir_ctime(str(p.parent))
             return (depth, -parent_ctime, p.name)
 
         all_files.sort(key=_sort_key)
@@ -161,7 +160,6 @@ class ScannerService:
                 continue
             if path.suffix.lower() not in allowed:
                 continue
-            # backpressure: 单次扫描途中 pending+queued 达阈值则停止入队,剩余文件下轮再扫
             if pending_count + queued >= max_pending_tasks:
                 throttled = True
                 break
@@ -282,16 +280,20 @@ class WorkerService:
         task = self.database.claim_next_pending_task()
         if not task:
             return False
+        emit("task.started", {"task_id": task["id"], "file_path": task["file_path"], "stage": task["stage"]})
         try:
             result_payload = self._process_claimed_task(task)
             self.database.mark_task_done(task["id"], result_payload)
+            emit("task.done", {"task_id": task["id"], "file_path": task["file_path"]})
             self._send_webhook(task)
         except CancellationRequested:
             latest = self.database.get_task(task["id"])
             self.database.mark_task_cancelled(task["id"], latest["stage"] if latest else task["stage"])
+            emit("task.cancelled", {"task_id": task["id"]})
         except Exception as exc:
             latest = self.database.get_task(task["id"])
             self.database.mark_task_failure(task["id"], latest["stage"] if latest else task["stage"], str(exc))
+            emit("task.failed", {"task_id": task["id"], "error": str(exc)})
         return True
 
     def _send_webhook(self, task: dict[str, Any]) -> None:
@@ -423,6 +425,7 @@ class WorkerService:
         self._ensure_not_cancelled(task_id, stage)
         self.database.update_task_stage(task_id, stage, progress)
         self.database.log(task_id, stage, "INFO", f"开始阶段 {stage}")
+        emit("task.progress", {"task_id": task_id, "stage": stage, "progress": progress})
         result = action()
         self.database.log(task_id, stage, "INFO", f"完成阶段 {stage}")
         self._ensure_not_cancelled(task_id, stage)

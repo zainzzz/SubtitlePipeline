@@ -54,3 +54,6 @@ doc/
 .playwright-mcp/
 .agents/
 skills-lock.json
+# OMC audit gap report artifacts (local tooling, not project code)
+backend/tests/_gap_skeletons/
+backend/tests/test_gap_report.py
