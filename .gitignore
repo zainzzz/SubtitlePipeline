@@ -54,3 +54,8 @@ doc/
 .playwright-mcp/
 .agents/
 skills-lock.json
+
+# 本地审计产物(gap 分析 / 报告),不入库
+.omo/
+backend/tests/_gap_skeletons/
+backend/tests/test_gap_report.py
