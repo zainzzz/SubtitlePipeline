@@ -272,13 +272,6 @@ export const sourceLanguageOptions: Array<{ value: SourceLanguage; label: string
   { value: 'hu', label: '匈牙利语' },
 ]
 
-export const asrProviderOptions: Array<{ value: ASRProvider; label: string }> = [
-  { value: 'whisperx', label: 'WhisperX' },
-  { value: 'faster-whisper', label: 'Faster-Whisper' },
-  { value: 'anime-whisper', label: 'Anime-Whisper' },
-  { value: 'qwen', label: 'Qwen-ASR' },
-]
-
 export const defaultAppConfig: AppConfig = {
   file: {
     input_dir: '/data',
