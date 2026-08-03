@@ -303,8 +303,8 @@ export const defaultAppConfig: AppConfig = {
     output_to_source_dir: true,
     allowed_extensions: ['.mp4', '.mkv', '.mov', '.avi'],
     scan_interval_seconds: 5,
-    min_size_mb: 1,
-    max_size_mb: 4096,
+    min_size_mb: 128,
+    max_size_mb: 8192,
     exclude_dirs: [],
     input_dirs: [],
     scan_enabled: true,
@@ -355,7 +355,7 @@ export const defaultAppConfig: AppConfig = {
   subtitle: {
     bilingual: true,
     bilingual_mode: 'merge',
-    filename_template: '{stem}.{lang}.srt',
+    filename_template: '{stem}.forced.{lang}.srt',
     source_language: 'auto',
   },
   mux: {

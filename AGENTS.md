@@ -89,20 +89,27 @@ All three processes share a single SQLite database with WAL mode enabled for con
 
 ### Core Pipeline Flow
 
-The subtitle generation pipeline (`app/pipeline.py`) executes these stages:
+The subtitle generation pipeline (`app/pipeline.py`) executes these stages (kept in sync with `app/defaults.py:STAGE_SEQUENCE`):
 
 1. **extract_audio** - Extract audio track from video using FFmpeg
 2. **run_asr** - Transcribe audio using selected ASR provider (WhisperX/Faster-Whisper/Anime-Whisper/Qwen)
-3. **process_text_segments** - Clean and normalize transcribed text
-4. **translate_segments** - Translate via OpenAI-compatible API (if enabled)
-5. **render_srt** - Generate `.srt` subtitle files (bilingual or monolingual)
-6. **mux_subtitle** - Optionally mux subtitles back into video container
+3. **align_segments** - Forced-align word/segment timestamps (provider-specific: WhisperX or Qwen forced aligner)
+4. **text_process** - Clean and normalize transcribed text (`app/segment_cleaner.py`)
+5. **translate** - Translate via OpenAI-compatible API (if enabled)
+6. **subtitle_render** - Generate `.srt` subtitle files (bilingual or monolingual)
+7. **output_finalize** - Persist final subtitle to source/output directory
+8. **mux** - Optionally mux subtitles back into video container (FFmpeg)
 
 Each stage saves intermediate results to `work_dir` for resume capability. The worker checks `cancel_requested` flag between stages.
 
 ### Multi-Provider ASR System
 
-The `app/model_manager.py` manages ASR models across four providers:
+The ASR system spans two layers:
+
+- **Provider implementations** (`app/asr/providers/{whisperx,faster_whisper,anime_whisper,qwen}.py`) — inference logic, one class per provider
+- **Registry / lifecycle** (`app/model_manager.py`) — model specs, downloads, activation, switching the active provider
+
+Four providers:
 
 - **WhisperX** (default): CTranslate2 + forced alignment for accurate timestamps
 - **Faster-Whisper**: Lightweight CTranslate2 inference, faster startup
