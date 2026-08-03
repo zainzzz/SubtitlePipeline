@@ -40,7 +40,7 @@ from .pipeline import (
     WhisperModelCache,
 )
 from .quality_checker import check_quality
-from .store import Database
+from .store import Database, normalize_path
 from .event_bus import emit
 
 
@@ -129,17 +129,6 @@ class ScannerService:
                 scanned=0, queued=0, skipped=0,
                 pending_count=pending_count, remaining_slots=0, throttled=True,
             )
-        scanned = 0
-        queued = 0
-        skipped = 0
-        throttled = False
-        all_files: list[Path] = []
-        root_of: dict[str, Path] = {}
-        for root in roots:
-            for p in root.rglob("*"):
-                if p.is_file():
-                    all_files.append(p)
-                    root_of[str(p)] = root
 
         @lru_cache(maxsize=None)
         def _dir_ctime(d: str) -> float:
@@ -147,6 +136,17 @@ class ScannerService:
                 return os.stat(d).st_ctime
             except OSError:
                 return 0.0
+
+        # 1. Walk the directory tree and collect candidate files (cheap, IO-bound).
+        #    Stage the path / size / mtime in memory so the rest of the scan runs
+        #    against a snapshot and not against the live filesystem.
+        all_files: list[Path] = []
+        root_of: dict[str, Path] = {}
+        for root in roots:
+            for p in root.rglob("*"):
+                if p.is_file():
+                    all_files.append(p)
+                    root_of[str(p)] = root
 
         def _sort_key(p: Path):
             root = root_of.get(str(p), roots[0])
@@ -156,45 +156,97 @@ class ScannerService:
 
         all_files.sort(key=_sort_key)
 
+        # 2. Cheap in-memory filters: skip paths / extension / size range.
+        #    Skip stat() on the path itself — we just read st_size/st_mtime
+        #    via os.stat, same as the previous per-file path.stat() call.
+        candidates: list[tuple[Path, int, float]] = []
+        scanned = 0
         for path in all_files:
             if _should_skip_scan_path(path, config):
                 continue
             if path.suffix.lower() not in allowed:
                 continue
-            if pending_count + queued >= max_pending_tasks:
-                throttled = True
-                break
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            size = int(stat.st_size)
+            if size < min_size_bytes or size > max_size_bytes:
+                scanned += 1
+                continue
+            candidates.append((path, size, float(stat.st_mtime)))
             scanned += 1
-            stat = path.stat()
-            observed = self.database.observe_file(str(path), int(stat.st_size), float(stat.st_mtime))
-            if observed["size_bytes"] < min_size_bytes or observed["size_bytes"] > max_size_bytes:
-                skipped += 1
-                continue
+
+        if not candidates:
+            self.database.record_scan_result({
+                "scanned": scanned, "queued": 0, "skipped": 0,
+                "pending_count": pending_count, "throttled": False,
+            })
+            return ScanResult(
+                scanned=scanned, queued=0, skipped=0,
+                pending_count=pending_count, remaining_slots=0, throttled=False,
+            )
+
+        # 3. Batch: upsert all candidates into files table in one transaction
+        #    (was: 1 SQL per file → now 1 SQL for the whole batch).
+        observe_inputs = [
+            {"file_path": str(p), "size_bytes": size, "mtime": mtime}
+            for p, size, mtime in candidates
+        ]
+        observes = self.database.bulk_observe_files(observe_inputs)
+
+        # 4. Apply stable_hits and subtitle-already-exists filters in memory.
+        #    Files that haven't been seen twice yet are deferred to the next
+        #    scan rather than queued. Files that already have a final .srt
+        #    on disk are skipped (this one is unavoidably a per-file FS call).
+        to_create: list[dict[str, Any]] = []
+        skipped_stable = 0
+        skipped_subtitle = 0
+        for (path, size, mtime), observe in zip(candidates, observe_inputs):
+            observed = observes[normalize_path(str(path))]
             if observed["stable_hits"] < 2:
-                skipped += 1
-                continue
-            if self.database.has_task_for_file_version(
-                observed["path_key"],
-                observed["size_bytes"],
-                observed["mtime"],
-            ):
-                skipped += 1
-                continue
-            if self.database.has_active_task(observed["path_key"]):
-                skipped += 1
+                skipped_stable += 1
                 continue
             if _has_existing_target_subtitle(path, config):
-                skipped += 1
+                skipped_subtitle += 1
                 continue
-            parent_dir_ctime = _dir_ctime(str(path.parent))
-            self.database.create_task(
-                observed["file_id"],
-                observed["path"],
-                observed["size_bytes"],
-                observed["mtime"],
-                parent_dir_ctime,
+            to_create.append(
+                {
+                    "file_id": observed["file_id"],
+                    "file_path": observed["path"],
+                    "size_bytes": observed["size_bytes"],
+                    "mtime": observed["mtime"],
+                    "parent_dir_ctime": _dir_ctime(str(path.parent)),
+                }
             )
-            queued += 1
+
+        # 5. Batch: detect already-handled versions + active tasks in 2 SQLs
+        #    (was: 2 SQLs per file).
+        version_keys = [
+            (normalize_path(it["file_path"]), it["size_bytes"], it["mtime"])
+            for it in to_create
+        ]
+        existing_versions = self.database.bulk_check_existing_versions(version_keys)
+        active_keys = self.database.bulk_check_active_tasks([k for (k, _, _) in version_keys])
+        to_create_filtered = [
+            it for it in to_create
+            if (normalize_path(it["file_path"]), it["size_bytes"], it["mtime"]) not in existing_versions
+            and normalize_path(it["file_path"]) not in active_keys
+        ]
+        skipped_existing = len(to_create) - len(to_create_filtered)
+
+        # 6. Apply throttle: respect max_pending_tasks. Trim to remaining slots.
+        remaining_slots = max(0, max_pending_tasks - pending_count)
+        throttled = False
+        if len(to_create_filtered) > remaining_slots:
+            to_create_filtered = to_create_filtered[:remaining_slots]
+            throttled = True
+
+        # 7. Batch: insert all queued tasks in a single transaction.
+        self.database.bulk_create_tasks(to_create_filtered)
+
+        queued = len(to_create_filtered)
+        skipped = skipped_stable + skipped_subtitle + skipped_existing
         self.database.record_scan_result({
             "scanned": scanned, "queued": queued, "skipped": skipped,
             "pending_count": pending_count, "throttled": throttled,

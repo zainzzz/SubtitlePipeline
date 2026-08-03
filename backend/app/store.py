@@ -752,6 +752,76 @@ class Database:
             "stable_hits": stable_hits,
         }
 
+    def bulk_observe_files(self, items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Upsert many files in one transaction.
+
+        Args:
+            items: list of {"file_path", "size_bytes", "mtime"} dicts.
+
+        Returns:
+            dict mapping path_key -> {file_id, path, path_key, size_bytes, mtime, stable_hits}.
+            Items already in the DB get stable_hits incremented (same logic as observe_file);
+            new items are inserted with stable_hits=1.
+        """
+        if not items:
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        now = utc_now()
+        # Process in chunks to avoid one giant transaction on big libraries
+        chunk_size = 200
+        for start in range(0, len(items), chunk_size):
+            chunk = items[start:start + chunk_size]
+            path_keys = [normalize_path(it["file_path"]) for it in chunk]
+            with self.connect() as connection:
+                placeholders = ",".join("?" for _ in path_keys)
+                rows = connection.execute(
+                    f"SELECT id, path_key, size_bytes, mtime, stable_hits FROM files WHERE path_key IN ({placeholders})",
+                    path_keys,
+                ).fetchall()
+                existing = {r["path_key"]: r for r in rows}
+                for it in chunk:
+                    path_key = normalize_path(it["file_path"])
+                    size = int(it["size_bytes"])
+                    mtime = float(it["mtime"])
+                    row = existing.get(path_key)
+                    if row:
+                        stable_hits = row["stable_hits"] + 1 if (
+                            row["size_bytes"] == size and float(row["mtime"]) == mtime
+                        ) else 1
+                        connection.execute(
+                            """
+                            UPDATE files
+                            SET path = ?, size_bytes = ?, mtime = ?, stable_hits = ?, last_seen_at = ?
+                            WHERE id = ?
+                            """,
+                            (it["file_path"], size, mtime, stable_hits, now, row["id"]),
+                        )
+                        result[path_key] = {
+                            "file_id": row["id"],
+                            "path": it["file_path"],
+                            "path_key": path_key,
+                            "size_bytes": size,
+                            "mtime": mtime,
+                            "stable_hits": stable_hits,
+                        }
+                    else:
+                        cursor = connection.execute(
+                            """
+                            INSERT INTO files (path, path_key, size_bytes, mtime, stable_hits, first_seen_at, last_seen_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (it["file_path"], path_key, size, mtime, 1, now, now),
+                        )
+                        result[path_key] = {
+                            "file_id": cursor.lastrowid,
+                            "path": it["file_path"],
+                            "path_key": path_key,
+                            "size_bytes": size,
+                            "mtime": mtime,
+                            "stable_hits": 1,
+                        }
+        return result
+
     def get_translation_cache(
         self,
         source_hash: str,
@@ -872,6 +942,34 @@ class Database:
             ).fetchone()
         return row is not None
 
+    def bulk_check_active_tasks(self, path_keys: list[str]) -> set[str]:
+        """Return the subset of `path_keys` that already have a pending/processing task.
+
+        Replaces the per-file `has_active_task` lookup in the scanner with a
+        single IN-clause query. The IN list is hard-capped at 1000 to avoid
+        SQLite variable limits; the caller chunks if needed.
+        """
+        if not path_keys:
+            return set()
+        out: set[str] = set()
+        chunk_size = 1000
+        for start in range(0, len(path_keys), chunk_size):
+            chunk = path_keys[start:start + chunk_size]
+            with self.connect() as connection:
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT file_path_key
+                    FROM tasks
+                    WHERE file_path_key IN ({placeholders})
+                      AND status IN ('pending', 'processing')
+                    """,
+                    chunk,
+                ).fetchall()
+            for row in rows:
+                out.add(row["file_path_key"])
+        return out
+
     def has_task_for_file_version(self, path_key: str, size_bytes: int, mtime: float) -> bool:
         with self.connect() as connection:
             row = connection.execute(
@@ -886,6 +984,103 @@ class Database:
                 (path_key, size_bytes, mtime),
             ).fetchone()
         return row is not None
+
+    def bulk_check_existing_versions(
+        self, items: list[tuple[str, int, float]]
+    ) -> set[tuple[str, int, float]]:
+        """Return the subset of (path_key, size_bytes, mtime) tuples that already
+        have at least one task. Replaces per-file `has_task_for_file_version`."""
+        if not items:
+            return set()
+        out: set[tuple[str, int, float]] = set()
+        chunk_size = 1000
+        for start in range(0, len(items), chunk_size):
+            chunk = items[start:start + chunk_size]
+            with self.connect() as connection:
+                # Build a parameterized IN list of (key, size, mtime) tuples.
+                # SQLite supports row-value IN via "IN ((?,?,?), ...)" so we can
+                # send a single query rather than 3*N parameters.
+                placeholders = ",".join("(?,?,?)" for _ in chunk)
+                flat: list[Any] = []
+                for key, size, mtime in chunk:
+                    flat.extend([key, int(size), float(mtime)])
+                rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT file_path_key, source_size_bytes, source_mtime
+                    FROM tasks
+                    WHERE (file_path_key, source_size_bytes, source_mtime) IN ({placeholders})
+                    """,
+                    flat,
+                ).fetchall()
+            for row in rows:
+                out.add(
+                    (row["file_path_key"], int(row["source_size_bytes"]), float(row["source_mtime"]))
+                )
+        return out
+
+    def bulk_create_tasks(
+        self,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Insert many pending tasks in a single transaction.
+
+        Args:
+            items: list of {file_id, file_path, size_bytes, mtime, parent_dir_ctime}
+                dicts (shape matches create_task's positional args).
+
+        Returns:
+            list of created task dicts (the same shape as `create_task`).
+        """
+        if not items:
+            return []
+        config = self.get_config()
+        max_retries = int(config["processing"]["max_retries"])
+        restart_required = 1 if config["meta"].get("restart_required") else 0
+        now = utc_now()
+        out: list[dict[str, Any]] = []
+        chunk_size = 200
+        for start in range(0, len(items), chunk_size):
+            chunk = items[start:start + chunk_size]
+            with self.connect() as connection:
+                ids: list[int] = []
+                for it in chunk:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO tasks (
+                            file_id, file_path, file_path_key, source_size_bytes, source_mtime,
+                            status, stage, progress, retry_count, max_retries,
+                            cancel_requested, restart_required, parent_dir_ctime, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, 'pending', 'queued', 0, 0, ?, 0, ?, ?, ?, ?)
+                        """,
+                        (
+                            it["file_id"],
+                            it["file_path"],
+                            normalize_path(it["file_path"]),
+                            int(it["size_bytes"]),
+                            float(it["mtime"]),
+                            max_retries,
+                            restart_required,
+                            float(it.get("parent_dir_ctime", 0.0) or 0.0),
+                            now,
+                            now,
+                        ),
+                    )
+                    ids.append(cursor.lastrowid)
+            for it, task_id in zip(chunk, ids):
+                out.append(
+                    {
+                        "id": task_id,
+                        "file_id": it["file_id"],
+                        "file_path": it["file_path"],
+                        "file_path_key": normalize_path(it["file_path"]),
+                        "source_size_bytes": int(it["size_bytes"]),
+                        "source_mtime": float(it["mtime"]),
+                        "status": "pending",
+                        "stage": "queued",
+                    }
+                )
+        return out
 
     def create_task(self, file_id: int, file_path: str, size_bytes: int, mtime: float, parent_dir_ctime: float = 0.0) -> dict[str, Any]:
         config = self.get_config()
