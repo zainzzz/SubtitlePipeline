@@ -79,6 +79,15 @@ DEFAULT_CONFIG = {
         "model": "gpt-4o-mini",
         "content_type": "general",
         "custom_prompt": "",
+        # LLM sampling parameters — exposed so users can tune quality / cost.
+        "temperature": 0.3,
+        "max_tokens": 8192,
+        "frequency_penalty": 1.2,
+        "presence_penalty": 0.8,
+        # Per-request HTTP-layer retry count for transient 5xx / connection errors.
+        # Applied via the OpenAI client constructor; non-OpenAI providers rely on
+        # their own urllib-based clients (no automatic retry today).
+        "http_max_retries": 3,
     },
     "subtitle": {
         "bilingual": True,

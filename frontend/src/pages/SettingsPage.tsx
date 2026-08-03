@@ -715,6 +715,17 @@ export function SettingsPage() {
                     <input disabled={!config.translation.enabled} type="number" value={config.translation.max_retries} onChange={(event) => setField('translation', 'max_retries', Number(event.target.value))} />
                   </label>
                   <label>
+                    <span>HTTP 层重试（瞬时 5xx/连接错误）</span>
+                    <input
+                      disabled={!config.translation.enabled}
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={config.translation.http_max_retries}
+                      onChange={(event) => setField('translation', 'http_max_retries', Math.max(0, Math.min(10, Number(event.target.value) || 0)))}
+                    />
+                  </label>
+                  <label>
                     <span>内容类型</span>
                     <select disabled={!config.translation.enabled || usingCustomPrompt} value={config.translation.content_type} onChange={(event) => setField('translation', 'content_type', event.target.value as AppConfig['translation']['content_type'])}>
                       {translationContentTypeOptions.map((option) => (
@@ -729,6 +740,62 @@ export function SettingsPage() {
                     <textarea disabled={!config.translation.enabled} rows={5} value={config.translation.custom_prompt} placeholder="留空使用预设，填写后将替换预设 prompt" onChange={(event) => setField('translation', 'custom_prompt', event.target.value)} />
                     <span className="muted">{usingCustomPrompt ? '当前已启用自定义 prompt，内容类型预设已禁用。' : '留空时使用上方内容类型预设。'}</span>
                   </div>
+                </div>
+              </section>
+              <section className="advanced-section">
+                <h4 className="advanced-section-title">LLM 采样参数</h4>
+                <p className="muted" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
+                  控制翻译模型的输出风格与长度上限。OpenAI/兼容/Ollama/Anthropic 均生效。
+                </p>
+                <div className="field-grid">
+                  <label>
+                    <span>Temperature (0-2)</span>
+                    <input
+                      disabled={!config.translation.enabled}
+                      type="number"
+                      step={0.1}
+                      min={0}
+                      max={2}
+                      value={config.translation.temperature}
+                      onChange={(event) => setField('translation', 'temperature', Math.max(0, Math.min(2, Number(event.target.value) || 0)))}
+                    />
+                  </label>
+                  <label>
+                    <span>Max Tokens</span>
+                    <input
+                      disabled={!config.translation.enabled}
+                      type="number"
+                      min={64}
+                      max={32768}
+                      step={64}
+                      value={config.translation.max_tokens}
+                      onChange={(event) => setField('translation', 'max_tokens', Math.max(64, Math.min(32768, Number(event.target.value) || 64)))}
+                    />
+                  </label>
+                  <label>
+                    <span>Frequency Penalty (-2~2)</span>
+                    <input
+                      disabled={!config.translation.enabled}
+                      type="number"
+                      step={0.1}
+                      min={-2}
+                      max={2}
+                      value={config.translation.frequency_penalty}
+                      onChange={(event) => setField('translation', 'frequency_penalty', Math.max(-2, Math.min(2, Number(event.target.value) || 0)))}
+                    />
+                  </label>
+                  <label>
+                    <span>Presence Penalty (-2~2)</span>
+                    <input
+                      disabled={!config.translation.enabled}
+                      type="number"
+                      step={0.1}
+                      min={-2}
+                      max={2}
+                      value={config.translation.presence_penalty}
+                      onChange={(event) => setField('translation', 'presence_penalty', Math.max(-2, Math.min(2, Number(event.target.value) || 0)))}
+                    />
+                  </label>
                 </div>
               </section>
             </div>

@@ -136,6 +136,11 @@ export type AppConfig = {
     model: string
     content_type: TranslationContentType
     custom_prompt: string
+    temperature: number
+    max_tokens: number
+    frequency_penalty: number
+    presence_penalty: number
+    http_max_retries: number
   }
   subtitle: {
     bilingual: boolean
@@ -365,6 +370,11 @@ export const defaultAppConfig: AppConfig = {
     model: 'gpt-4o-mini',
     content_type: 'general',
     custom_prompt: '',
+    temperature: 0.3,
+    max_tokens: 8192,
+    frequency_penalty: 1.2,
+    presence_penalty: 0.8,
+    http_max_retries: 3,
   },
   subtitle: {
     bilingual: true,

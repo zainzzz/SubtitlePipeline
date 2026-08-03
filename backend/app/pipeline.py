@@ -441,18 +441,41 @@ class ChunkedTranslator:
 
 
 class LLMTranslationProvider(TranslationProvider):
-    def __init__(self, llm_type: str, api_base_url: str, api_key: str, model: str, timeout_seconds: int):
+    def __init__(
+        self,
+        llm_type: str,
+        api_base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: int,
+        *,
+        temperature: float = 0.3,
+        max_tokens: int = 8192,
+        frequency_penalty: float = 1.2,
+        presence_penalty: float = 0.8,
+        http_max_retries: int = 3,
+    ):
         self.llm_type = llm_type
         self.api_base_url = api_base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.frequency_penalty = float(frequency_penalty)
+        self.presence_penalty = float(presence_penalty)
+        self.http_max_retries = int(http_max_retries)
         self.client = create_llm_client(
             llm_type=self.llm_type,
             api_base_url=self.api_base_url,
             api_key=self.api_key,
             model=self.model,
             timeout_seconds=self.timeout_seconds,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            http_max_retries=self.http_max_retries,
         )
 
     def translate_batch(self, texts: list[str], target_language: str) -> list[str]:
@@ -916,6 +939,11 @@ def get_translation_provider(config_snapshot: dict[str, Any]) -> TranslationProv
         api_key=str(translation["api_key"]).strip(),
         model=str(translation["model"]).strip(),
         timeout_seconds=int(translation["timeout_seconds"]),
+        temperature=float(translation.get("temperature", 0.3) or 0.0),
+        max_tokens=int(translation.get("max_tokens", 8192) or 8192),
+        frequency_penalty=float(translation.get("frequency_penalty", 1.2) or 0.0),
+        presence_penalty=float(translation.get("presence_penalty", 0.8) or 0.0),
+        http_max_retries=int(translation.get("http_max_retries", 3) or 0),
     )
 
 

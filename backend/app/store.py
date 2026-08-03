@@ -100,6 +100,26 @@ def _migrate_notification_config(notification_config: dict[str, Any]) -> None:
         notification_config["subtitle_change_debounce_seconds"] = 5
 
 
+def _migrate_translation_config(translation_config: dict[str, Any]) -> None:
+    """Backfill defaults for new translation sampling / retry fields.
+
+    New in 2026-08: `temperature`, `max_tokens`, `frequency_penalty`,
+    `presence_penalty`, `http_max_retries`. Previously these were hardcoded
+    constants in the LLM clients — users could not tune them. We default
+    to the previous hardcoded values so existing users see no behavior change.
+    """
+    if not isinstance(translation_config.get("temperature"), (int, float)):
+        translation_config["temperature"] = 0.3
+    if not isinstance(translation_config.get("max_tokens"), int) or translation_config["max_tokens"] <= 0:
+        translation_config["max_tokens"] = 8192
+    if not isinstance(translation_config.get("frequency_penalty"), (int, float)):
+        translation_config["frequency_penalty"] = 1.2
+    if not isinstance(translation_config.get("presence_penalty"), (int, float)):
+        translation_config["presence_penalty"] = 0.8
+    if not isinstance(translation_config.get("http_max_retries"), int) or translation_config["http_max_retries"] < 0:
+        translation_config["http_max_retries"] = 3
+
+
 @dataclass
 class PageResult:
     items: list[dict[str, Any]]
@@ -351,6 +371,8 @@ class Database:
         _migrate_whisper_config_dict(whisper_config)
         notification_config = defaults.setdefault("notification", {})
         _migrate_notification_config(notification_config)
+        translation_config = defaults.setdefault("translation", {})
+        _migrate_translation_config(translation_config)
         if defaults.get("whisper", {}).get("device") == "auto":
             defaults["whisper"]["device"] = detect_device()
         defaults["meta"] = {"restart_required": restart_required}
@@ -570,6 +592,8 @@ class Database:
             _migrate_whisper_config_dict(task["config_snapshot"]["whisper"])
         if task["config_snapshot"] and isinstance(task["config_snapshot"].get("notification"), dict):
             _migrate_notification_config(task["config_snapshot"]["notification"])
+        if task["config_snapshot"] and isinstance(task["config_snapshot"].get("translation"), dict):
+            _migrate_translation_config(task["config_snapshot"]["translation"])
         return task
 
     def get_logs(self, task_id: int, page: int, page_size: int) -> PageResult:

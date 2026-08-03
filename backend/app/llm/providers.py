@@ -98,6 +98,14 @@ def _join_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
+# Default sampling / retry knobs. Used when callers don't pass explicit values.
+DEFAULT_LLM_TEMPERATURE = 0.3
+DEFAULT_LLM_MAX_TOKENS = 8192
+DEFAULT_LLM_FREQUENCY_PENALTY = 1.2
+DEFAULT_LLM_PRESENCE_PENALTY = 0.8
+DEFAULT_LLM_HTTP_MAX_RETRIES = 3
+
+
 class OpenAICompatibleLLMClient(LLMClient):
     def __init__(
         self,
@@ -108,17 +116,27 @@ class OpenAICompatibleLLMClient(LLMClient):
         *,
         default_base_url: str | None = None,
         requires_api_key: bool = True,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        http_max_retries: int | None = None,
     ):
         self.api_base_url = (api_base_url or default_base_url or SUPPORTED_LLM_TYPES["openai-compatible"]["default_base_url"]).rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.requires_api_key = requires_api_key
+        self.temperature = DEFAULT_LLM_TEMPERATURE if temperature is None else float(temperature)
+        self.max_tokens = DEFAULT_LLM_MAX_TOKENS if max_tokens is None else int(max_tokens)
+        self.frequency_penalty = DEFAULT_LLM_FREQUENCY_PENALTY if frequency_penalty is None else float(frequency_penalty)
+        self.presence_penalty = DEFAULT_LLM_PRESENCE_PENALTY if presence_penalty is None else float(presence_penalty)
+        self.http_max_retries = DEFAULT_LLM_HTTP_MAX_RETRIES if http_max_retries is None else int(http_max_retries)
         self.client = OpenAI(
             api_key=self.api_key or "missing-api-key",
             base_url=self.resolved_base_url(),
             timeout=float(self.timeout_seconds),
-            max_retries=0,
+            max_retries=self.http_max_retries,
         )
 
     def resolved_base_url(self) -> str:
@@ -138,11 +156,11 @@ class OpenAICompatibleLLMClient(LLMClient):
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": item.role, "content": item.content} for item in messages],
-                max_tokens=8192,
+                max_tokens=self.max_tokens,
                 stream=True,
-                temperature=0.3,
-                frequency_penalty=1.2,
-                presence_penalty=0.8,
+                temperature=self.temperature,
+                frequency_penalty=self.frequency_penalty,
+                presence_penalty=self.presence_penalty,
                 extra_body=extra_body,
             )
             parts: list[str] = []
@@ -177,16 +195,29 @@ class OpenAICompatibleLLMClient(LLMClient):
 
 
 class OpenAIResponsesLLMClient(LLMClient):
-    def __init__(self, api_base_url: str, api_key: str, model: str, timeout_seconds: int):
+    def __init__(
+        self,
+        api_base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: int,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        http_max_retries: int | None = None,
+    ):
         self.api_base_url = (api_base_url or SUPPORTED_LLM_TYPES["openai-responses"]["default_base_url"]).rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.temperature = DEFAULT_LLM_TEMPERATURE if temperature is None else float(temperature)
+        self.max_tokens = DEFAULT_LLM_MAX_TOKENS if max_tokens is None else int(max_tokens)
+        self.http_max_retries = DEFAULT_LLM_HTTP_MAX_RETRIES if http_max_retries is None else int(http_max_retries)
         self.client = OpenAI(
             api_key=self.api_key or "missing-api-key",
             base_url=self.resolved_base_url(),
             timeout=float(self.timeout_seconds),
-            max_retries=0,
+            max_retries=self.http_max_retries,
         )
 
     def resolved_base_url(self) -> str:
@@ -204,8 +235,8 @@ class OpenAIResponsesLLMClient(LLMClient):
                 model=self.model,
                 instructions=instructions or None,
                 input=input_text,
-                max_output_tokens=8192,
-                temperature=0.3,
+                max_output_tokens=self.max_tokens,
+                temperature=self.temperature,
             )
         except openai.AuthenticationError as exc:
             raise LLMError("翻译服务鉴权失败，请检查 API Key") from exc
@@ -249,11 +280,22 @@ class OpenAIResponsesLLMClient(LLMClient):
 
 
 class JsonHttpLLMClient(LLMClient):
-    def __init__(self, api_base_url: str, api_key: str, model: str, timeout_seconds: int):
+    def __init__(
+        self,
+        api_base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: int,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ):
         self.api_base_url = api_base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.temperature = DEFAULT_LLM_TEMPERATURE if temperature is None else float(temperature)
+        self.max_tokens = DEFAULT_LLM_MAX_TOKENS if max_tokens is None else int(max_tokens)
 
     def _post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
@@ -286,8 +328,21 @@ class JsonHttpLLMClient(LLMClient):
 
 
 class AnthropicLLMClient(JsonHttpLLMClient):
-    def __init__(self, api_base_url: str, api_key: str, model: str, timeout_seconds: int):
-        super().__init__(api_base_url or SUPPORTED_LLM_TYPES["anthropic"]["default_base_url"], api_key, model, timeout_seconds)
+    def __init__(
+        self,
+        api_base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: int,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ):
+        super().__init__(
+            api_base_url or SUPPORTED_LLM_TYPES["anthropic"]["default_base_url"],
+            api_key, model, timeout_seconds,
+            temperature=temperature, max_tokens=max_tokens,
+        )
 
     def resolved_base_url(self) -> str:
         return self.api_base_url
@@ -313,8 +368,8 @@ class AnthropicLLMClient(JsonHttpLLMClient):
                 user_messages.append({"role": "user", "content": system_prompt})
         payload: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 8192,
-            "temperature": 0.3,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
             "messages": user_messages,
         }
         response = self._post_json(
@@ -335,8 +390,20 @@ class AnthropicLLMClient(JsonHttpLLMClient):
 
 
 class OllamaLLMClient(JsonHttpLLMClient):
-    def __init__(self, api_base_url: str, api_key: str, model: str, timeout_seconds: int):
-        super().__init__(api_base_url or SUPPORTED_LLM_TYPES["ollama"]["default_base_url"], api_key, model, timeout_seconds)
+    def __init__(
+        self,
+        api_base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: int,
+        *,
+        temperature: float | None = None,
+    ):
+        super().__init__(
+            api_base_url or SUPPORTED_LLM_TYPES["ollama"]["default_base_url"],
+            api_key, model, timeout_seconds,
+            temperature=temperature,
+        )
 
     def resolved_base_url(self) -> str:
         return self.api_base_url
@@ -352,7 +419,7 @@ class OllamaLLMClient(JsonHttpLLMClient):
             "stream": False,
             "messages": [{"role": item.role, "content": item.content} for item in messages],
             "options": {
-                "temperature": 0.3,
+                "temperature": self.temperature,
             },
         }
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -372,6 +439,12 @@ def create_llm_client(
     api_key: str,
     model: str,
     timeout_seconds: int,
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    frequency_penalty: float | None = None,
+    presence_penalty: float | None = None,
+    http_max_retries: int | None = None,
 ) -> LLMClient:
     normalized = normalize_llm_type(llm_type)
     if normalized == "openai-chat":
@@ -382,11 +455,23 @@ def create_llm_client(
             timeout_seconds,
             default_base_url=SUPPORTED_LLM_TYPES["openai-chat"]["default_base_url"],
             requires_api_key=True,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            http_max_retries=http_max_retries,
         )
     if normalized == "openai-responses":
-        return OpenAIResponsesLLMClient(api_base_url, api_key, model, timeout_seconds)
+        return OpenAIResponsesLLMClient(
+            api_base_url, api_key, model, timeout_seconds,
+            temperature=temperature, max_tokens=max_tokens,
+            http_max_retries=http_max_retries,
+        )
     if normalized == "anthropic":
-        return AnthropicLLMClient(api_base_url, api_key, model, timeout_seconds)
+        return AnthropicLLMClient(
+            api_base_url, api_key, model, timeout_seconds,
+            temperature=temperature, max_tokens=max_tokens,
+        )
     if normalized == "lmstudio":
         return OpenAICompatibleLLMClient(
             api_base_url,
@@ -395,7 +480,20 @@ def create_llm_client(
             timeout_seconds,
             default_base_url=SUPPORTED_LLM_TYPES["lmstudio"]["default_base_url"],
             requires_api_key=False,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            http_max_retries=http_max_retries,
         )
     if normalized == "ollama":
-        return OllamaLLMClient(api_base_url, api_key, model, timeout_seconds)
-    return OpenAICompatibleLLMClient(api_base_url, api_key, model, timeout_seconds)
+        return OllamaLLMClient(
+            api_base_url, api_key, model, timeout_seconds,
+            temperature=temperature,
+        )
+    return OpenAICompatibleLLMClient(
+        api_base_url, api_key, model, timeout_seconds,
+        temperature=temperature, max_tokens=max_tokens,
+        frequency_penalty=frequency_penalty, presence_penalty=presence_penalty,
+        http_max_retries=http_max_retries,
+    )
