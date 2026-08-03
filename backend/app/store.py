@@ -87,6 +87,19 @@ def _migrate_whisper_config_dict(whisper_config: dict[str, Any]) -> None:
     whisper_config.pop("align_method", None)
 
 
+def _migrate_notification_config(notification_config: dict[str, Any]) -> None:
+    """Backfill defaults for new notification fields on existing config rows.
+
+    New in 2026-08: `trigger_on_subtitle_change` and `subtitle_change_debounce_seconds`.
+    Both are read by the API when handling subtitle edit endpoints, so missing
+    values would silently disable the feature for users on an old config row.
+    """
+    notification_config.setdefault("trigger_on_subtitle_change", True)
+    debounce = notification_config.get("subtitle_change_debounce_seconds")
+    if debounce is None or not isinstance(debounce, (int, float)) or debounce < 0:
+        notification_config["subtitle_change_debounce_seconds"] = 5
+
+
 @dataclass
 class PageResult:
     items: list[dict[str, Any]]
@@ -336,6 +349,8 @@ class Database:
             defaults.setdefault(row["group_name"], {})[row["key_name"]] = json.loads(row["value_json"])
         whisper_config = defaults.setdefault("whisper", {})
         _migrate_whisper_config_dict(whisper_config)
+        notification_config = defaults.setdefault("notification", {})
+        _migrate_notification_config(notification_config)
         if defaults.get("whisper", {}).get("device") == "auto":
             defaults["whisper"]["device"] = detect_device()
         defaults["meta"] = {"restart_required": restart_required}
@@ -553,6 +568,8 @@ class Database:
         task["result_payload"] = json.loads(task["result_payload"]) if task["result_payload"] else None
         if task["config_snapshot"] and isinstance(task["config_snapshot"].get("whisper"), dict):
             _migrate_whisper_config_dict(task["config_snapshot"]["whisper"])
+        if task["config_snapshot"] and isinstance(task["config_snapshot"].get("notification"), dict):
+            _migrate_notification_config(task["config_snapshot"]["notification"])
         return task
 
     def get_logs(self, task_id: int, page: int, page_size: int) -> PageResult:

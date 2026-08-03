@@ -876,7 +876,10 @@ export function SettingsPage() {
           description="任务完成后自动通知媒体服务器刷新库。"
           statusLabel={config.notification.webhook_enabled ? '已启用' : '未启用'}
           tone={config.notification.webhook_enabled ? 'success' : 'neutral'}
-          pills={[config.notification.webhook_type || 'jellyfin']}
+          pills={[
+            config.notification.webhook_type || 'jellyfin',
+            config.notification.trigger_on_subtitle_change ? '编辑触发' : '编辑静默',
+          ]}
           expanded={expanded.notification}
           onToggle={() => toggleExpanded('notification')}
           headerActions={(
@@ -907,6 +910,24 @@ export function SettingsPage() {
               <label>
                 <span>媒体库 ID（逗号分隔，留空扫描全部）</span>
                 <input value={config.notification.webhook_library_id} onChange={(e) => setField('notification', 'webhook_library_id', e.target.value)} />
+              </label>
+              <label className="switch-row" style={{ gridColumn: '1 / -1' }}>
+                <span>编辑/重译字幕后也通知媒体库（默认开启，连续保存 5s 内合并成一次）</span>
+                <input
+                  type="checkbox"
+                  checked={config.notification.trigger_on_subtitle_change}
+                  onChange={(e) => setField('notification', 'trigger_on_subtitle_change', e.target.checked)}
+                />
+              </label>
+              <label>
+                <span>编辑防抖窗口（秒）</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={60}
+                  value={config.notification.subtitle_change_debounce_seconds}
+                  onChange={(e) => setField('notification', 'subtitle_change_debounce_seconds', Number(e.target.value) || 0)}
+                />
               </label>
             </div>
           )}

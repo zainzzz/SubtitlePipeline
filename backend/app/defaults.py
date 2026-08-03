@@ -99,6 +99,8 @@ DEFAULT_CONFIG = {
         "webhook_url": "",
         "webhook_token": "",  # Jellyfin/Emby API key or Plex token
         "webhook_library_id": "",  # comma-separated library IDs (Jellyfin/Emby) or section IDs (Plex)
+        "trigger_on_subtitle_change": True,  # also fire webhook when user edits / re-renders subtitles after a task is done
+        "subtitle_change_debounce_seconds": 5,  # coalesce rapid edits into one webhook
     },
     "schedule": {
         "enabled": False,

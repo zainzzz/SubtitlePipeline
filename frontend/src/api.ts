@@ -1,3 +1,15 @@
+// ---- Webhook ----
+export type WebhookState = 'success' | 'failed' | 'skipped'
+export type WebhookTrigger = 'completion' | 'subtitle_change'
+
+export type WebhookStatus = {
+  state: WebhookState
+  webhook_type: string | null
+  triggered_by: WebhookTrigger
+  error: string | null
+  detail: string | null
+}
+
 export type Task = {
   id: number
   file_path: string
@@ -144,6 +156,8 @@ export type AppConfig = {
     webhook_url: string
     webhook_token: string
     webhook_library_id: string
+    trigger_on_subtitle_change: boolean
+    subtitle_change_debounce_seconds: number
   }
   schedule: {
     enabled: boolean
@@ -371,6 +385,8 @@ export const defaultAppConfig: AppConfig = {
     webhook_url: '',
     webhook_token: '',
     webhook_library_id: '',
+    trigger_on_subtitle_change: true,
+    subtitle_change_debounce_seconds: 5,
   },
   schedule: {
     enabled: false,
@@ -553,10 +569,19 @@ export function getTaskSubtitle(taskId: number): Promise<{ content: string; path
   return request(`/api/tasks/${taskId}/subtitle`)
 }
 
-export function updateTaskSubtitle(taskId: number, content: string): Promise<{ status: string }> {
+export function updateTaskSubtitle(
+  taskId: number,
+  content: string,
+): Promise<{ status: string; webhook: WebhookStatus }> {
   return request(`/api/tasks/${taskId}/subtitle`, {
     method: 'PUT',
     body: JSON.stringify({ content }),
+  })
+}
+
+export function triggerSubtitleWebhook(taskId: number): Promise<{ webhook: WebhookStatus }> {
+  return request(`/api/tasks/${taskId}/webhook/trigger`, {
+    method: 'POST',
   })
 }
 

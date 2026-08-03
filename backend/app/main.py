@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -36,6 +38,71 @@ from .pipeline import (
 )
 from .runtime import ScannerService, WorkerService
 from .store import Database
+from .webhook import (
+    TRIGGER_SUBTITLE_CHANGE,
+    WebhookStatus,
+    send_webhook_notification,
+)
+
+
+# In-process state for the subtitle-edit webhook path. Lives in the API process
+# only — worker reads its own config snapshot when firing the completion hook.
+_subtitle_webhook_lock = threading.Lock()
+_subtitle_webhook_last_sent: dict[int, float] = {}
+
+
+def _webhook_status_to_dict(status: WebhookStatus) -> dict[str, Any]:
+    """Serialize a WebhookStatus for JSON responses."""
+    return {
+        "state": status.state,
+        "webhook_type": status.webhook_type,
+        "triggered_by": status.triggered_by,
+        "error": status.error,
+        "detail": status.detail,
+    }
+
+
+def _trigger_subtitle_webhook(task: dict[str, Any], config: dict[str, Any]) -> WebhookStatus:
+    """Fire a webhook for a subtitle edit / re-render event.
+
+    Two pre-conditions are checked before delegating to send_webhook_notification:
+      1. `notification.trigger_on_subtitle_change` is on (default True).
+      2. Debounce window has elapsed since the last send for this task_id.
+         (Default 5s — coalesces rapid edits.)
+    """
+    notif = (config or {}).get("notification", {}) or {}
+    if not notif.get("trigger_on_subtitle_change", True):
+        return WebhookStatus(
+            state="skipped",
+            webhook_type=None,
+            triggered_by=TRIGGER_SUBTITLE_CHANGE,
+            detail="trigger_on_subtitle_change disabled",
+        )
+
+    debounce_seconds = int(notif.get("subtitle_change_debounce_seconds", 5) or 0)
+    task_id = task.get("id")
+    if not isinstance(task_id, int):
+        return WebhookStatus(
+            state="skipped",
+            webhook_type=None,
+            triggered_by=TRIGGER_SUBTITLE_CHANGE,
+            detail="task missing id",
+        )
+
+    now = time.time()
+    if debounce_seconds > 0:
+        with _subtitle_webhook_lock:
+            last = _subtitle_webhook_last_sent.get(task_id, 0.0)
+            if now - last < debounce_seconds:
+                return WebhookStatus(
+                    state="skipped",
+                    webhook_type=str(notif.get("webhook_type") or "") or None,
+                    triggered_by=TRIGGER_SUBTITLE_CHANGE,
+                    detail=f"debounced ({int(now - last)}s ago, window={debounce_seconds}s)",
+                )
+            _subtitle_webhook_last_sent[task_id] = now
+
+    return send_webhook_notification(config, task, trigger=TRIGGER_SUBTITLE_CHANGE)
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -540,7 +607,7 @@ def create_app() -> FastAPI:
         return {"content": content, "path": subtitle_path}
 
     @app.put("/api/tasks/{task_id}/subtitle")
-    def update_task_subtitle(task_id: int, request: SubtitleUpdateRequest) -> dict[str, str]:
+    def update_task_subtitle(task_id: int, request: SubtitleUpdateRequest) -> dict[str, Any]:
         database = get_database(app)
         task = database.get_task(task_id)
         if not task:
@@ -552,7 +619,14 @@ def create_app() -> FastAPI:
             path = Path(subtitle_path)
             if path.exists():
                 path.write_text(request.content, encoding="utf-8")
-        return {"status": "updated"}
+        # Re-read config from DB (not from cached task) so webhook settings reflect
+        # any recent changes the user made on the settings page.
+        config = database.get_config()
+        webhook_status = _trigger_subtitle_webhook(task, config)
+        return {
+            "status": "updated",
+            "webhook": _webhook_status_to_dict(webhook_status),
+        }
 
     @app.get("/api/tasks/{task_id}/segments")
     def get_task_segments(task_id: int) -> dict[str, Any]:
@@ -611,7 +685,15 @@ def create_app() -> FastAPI:
                 )
         save_translations(context, request.translations)
         subtitle_paths = render_srt(context, processed, request.translations)
-        return {"status": "updated", "subtitle_paths": subtitle_paths}
+        # Fire the subtitle-change webhook after the SRT files have been
+        # re-rendered, so the media server refresh picks up the latest content.
+        config = database.get_config()
+        webhook_status = _trigger_subtitle_webhook(task, config)
+        return {
+            "status": "updated",
+            "subtitle_paths": subtitle_paths,
+            "webhook": _webhook_status_to_dict(webhook_status),
+        }
 
     # ---- Re-translate (re-run translation for done task) ----
     @app.post("/api/tasks/{task_id}/retranslate")
@@ -630,6 +712,28 @@ def create_app() -> FastAPI:
         database.requeue_with_new_config(task_id, "translate", config_snapshot)
         emit("task.requeued", {"task_id": task_id, "reason": "retranslate"})
         return {"status": "queued", "task_id": task_id}
+
+    # ---- Manual subtitle-change webhook re-trigger ----
+    @app.post("/api/tasks/{task_id}/webhook/trigger")
+    def trigger_subtitle_webhook(task_id: int) -> dict[str, Any]:
+        """Manually fire a subtitle-change webhook for a done task.
+
+        Bypasses the in-process debounce window so the user can force a re-send
+        if the last attempt failed. No-op (with a 'skipped' status) if the
+        trigger is disabled or the task is not in a state that supports it.
+        """
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task["status"] != "done":
+            raise HTTPException(status_code=400, detail="only done tasks support manual webhook trigger")
+        config = database.get_config()
+        # Clear the debounce record so this manual send isn't suppressed.
+        with _subtitle_webhook_lock:
+            _subtitle_webhook_last_sent[int(task["id"])] = 0.0
+        status = _trigger_subtitle_webhook(task, config)
+        return {"webhook": _webhook_status_to_dict(status)}
 
     # ---- Retry with model override ----
     @app.post("/api/tasks/{task_id}/retry-with-model")

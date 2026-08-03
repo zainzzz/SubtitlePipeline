@@ -1,8 +1,55 @@
 import { useCallback, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
-import { getTask, getTaskLogs, getTaskSubtitle, updateTaskSubtitle, LogResponse, Task } from '../api'
+import {
+  getTask,
+  getTaskLogs,
+  getTaskSubtitle,
+  triggerSubtitleWebhook,
+  updateTaskSubtitle,
+  LogResponse,
+  Task,
+  WebhookStatus,
+} from '../api'
 import { usePolling } from '../hooks'
+
+function WebhookBadge({
+  status,
+  busy,
+  onRetry,
+}: {
+  status: WebhookStatus
+  busy: boolean
+  onRetry: () => void
+}) {
+  let label = ''
+  let tone: 'success' | 'error' | 'neutral' = 'neutral'
+  if (status.state === 'success') {
+    label = `已通知 ${status.webhook_type || '媒体库'} ✓`
+    tone = 'success'
+  } else if (status.state === 'failed') {
+    label = `通知失败: ${status.error || '未知错误'}`
+    tone = 'error'
+  } else {
+    label = `未通知 (${status.detail || status.state})`
+    tone = 'neutral'
+  }
+  return (
+    <div className={`webhook-badge webhook-${tone}`} style={{ marginTop: 8, fontSize: 12 }}>
+      <span>{label}</span>
+      {status.state === 'failed' ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={busy}
+          style={{ marginLeft: 8, padding: '2px 8px', fontSize: 12 }}
+        >
+          {busy ? '重试中…' : '重试'}
+        </button>
+      ) : null}
+    </div>
+  )
+}
 
 export function TaskDetailPage() {
   const { taskId } = useParams()
@@ -14,6 +61,8 @@ export function TaskDetailPage() {
   const [subtitlePath, setSubtitlePath] = useState('')
   const [editing, setEditing] = useState(false)
   const [editContent, setEditContent] = useState('')
+  const [webhookStatus, setWebhookStatus] = useState<WebhookStatus | null>(null)
+  const [webhookBusy, setWebhookBusy] = useState(false)
 
   const loadTask = useCallback(async () => {
     if (!taskId) {
@@ -74,11 +123,25 @@ export function TaskDetailPage() {
   const saveEdit = async () => {
     if (!taskId) return
     try {
-      await updateTaskSubtitle(Number(taskId), editContent)
+      const result = await updateTaskSubtitle(Number(taskId), editContent)
       setSubtitleContent(editContent)
       setEditing(false)
+      setWebhookStatus(result.webhook)
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败')
+    }
+  }
+
+  const resendWebhook = async () => {
+    if (!taskId || webhookBusy) return
+    setWebhookBusy(true)
+    try {
+      const result = await triggerSubtitleWebhook(Number(taskId))
+      setWebhookStatus(result.webhook)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重新通知失败')
+    } finally {
+      setWebhookBusy(false)
     }
   }
 
@@ -165,6 +228,7 @@ export function TaskDetailPage() {
                 <p className="muted">点击"加载字幕"查看内容</p>
               )}
               {subtitlePath ? <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{subtitlePath}</p> : null}
+              {webhookStatus ? <WebhookBadge status={webhookStatus} busy={webhookBusy} onRetry={() => void resendWebhook()} /> : null}
             </div>
           ) : null}
           <div className="card">
