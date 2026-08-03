@@ -23,7 +23,17 @@ from .model_manager import (
     normalize_provider_name,
     resolve_model_name,
 )
-from .pipeline import PipelineError, check_resume_feasibility, get_translation_provider
+from .pipeline import (
+    PipelineError,
+    TaskContext,
+    check_resume_feasibility,
+    get_translation_provider,
+    load_processed_segments,
+    load_translations,
+    normalize_stage_name,
+    render_srt,
+    save_translations,
+)
 from .runtime import ScannerService, WorkerService
 from .store import Database
 
@@ -57,6 +67,16 @@ class SubtitleUpdateRequest(BaseModel):
 class ConfigImportRequest(BaseModel):
     config: dict[str, Any]
     version: int = 1
+
+
+class SegmentsUpdateRequest(BaseModel):
+    translations: dict[str, list[str]]
+
+
+class RetryOverrideRequest(BaseModel):
+    model_name: str | None = None
+    provider: str | None = None
+    target_languages: list[str] | None = None
 
 
 class TaskActionResponse(BaseModel):
@@ -533,6 +553,114 @@ def create_app() -> FastAPI:
             if path.exists():
                 path.write_text(request.content, encoding="utf-8")
         return {"status": "updated"}
+
+    @app.get("/api/tasks/{task_id}/segments")
+    def get_task_segments(task_id: int) -> dict[str, Any]:
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task["status"] != "done":
+            raise HTTPException(status_code=400, detail="task not yet completed")
+        config = task.get("config_snapshot") or database.get_config()
+        work_dir = Path(config["processing"]["work_dir"]) / str(task_id)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        context = TaskContext(
+            task_id=task_id,
+            file_path=task["file_path"],
+            config_snapshot=config,
+            work_dir=work_dir,
+        )
+        try:
+            processed = load_processed_segments(context)
+        except PipelineError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            translations = load_translations(context)
+        except PipelineError:
+            translations = {}
+        return {"segments": processed, "translations": translations}
+
+    @app.put("/api/tasks/{task_id}/segments")
+    def update_task_segments(task_id: int, request: SegmentsUpdateRequest) -> dict[str, str]:
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task["status"] != "done":
+            raise HTTPException(status_code=400, detail="task not yet completed")
+        config = task.get("config_snapshot") or database.get_config()
+        work_dir = Path(config["processing"]["work_dir"]) / str(task_id)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        context = TaskContext(
+            task_id=task_id,
+            file_path=task["file_path"],
+            config_snapshot=config,
+            work_dir=work_dir,
+        )
+        try:
+            processed = load_processed_segments(context)
+        except PipelineError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        segment_count = len(processed)
+        for lang, lines in request.translations.items():
+            if len(lines) != segment_count:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"language '{lang}' has {len(lines)} lines, expected {segment_count}",
+                )
+        save_translations(context, request.translations)
+        subtitle_paths = render_srt(context, processed, request.translations)
+        return {"status": "updated", "subtitle_paths": subtitle_paths}
+
+    # ---- Re-translate (re-run translation for done task) ----
+    @app.post("/api/tasks/{task_id}/retranslate")
+    def retranslate_task(task_id: int, request: RetryOverrideRequest | None = None) -> dict[str, Any]:
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task["status"] != "done":
+            raise HTTPException(status_code=400, detail="only done tasks can be retranslated")
+        config_snapshot = task.get("config_snapshot") or database.get_config()
+        if not config_snapshot.get("translation", {}).get("enabled"):
+            raise HTTPException(status_code=400, detail="translation is disabled in task config")
+        if request and request.target_languages:
+            config_snapshot = {**config_snapshot, "translation": {**config_snapshot.get("translation", {}), "target_languages": list(request.target_languages)}}
+        database.requeue_with_new_config(task_id, "translate", config_snapshot)
+        emit("task.requeued", {"task_id": task_id, "reason": "retranslate"})
+        return {"status": "queued", "task_id": task_id}
+
+    # ---- Retry with model override ----
+    @app.post("/api/tasks/{task_id}/retry-with-model")
+    def retry_with_model(task_id: int, request: RetryOverrideRequest) -> dict[str, Any]:
+        database = get_database(app)
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task["status"] not in {"failed", "cancelled", "done"}:
+            raise HTTPException(status_code=400, detail="task is not retryable")
+        config_snapshot = task.get("config_snapshot") or database.get_config()
+        whisper = dict(config_snapshot.get("whisper", {}))
+        if request.model_name:
+            whisper["model_name"] = request.model_name
+        if request.provider:
+            whisper["provider"] = request.provider
+        if request.target_languages is not None:
+            translation = dict(config_snapshot.get("translation", {}))
+            translation["target_languages"] = list(request.target_languages)
+            config_snapshot = {**config_snapshot, "translation": translation, "whisper": whisper}
+        else:
+            config_snapshot = {**config_snapshot, "whisper": whisper}
+        feasibility = check_resume_feasibility(task)
+        if feasibility.get("can_resume") and request.model_name is None and request.provider is None:
+            resume_stage = str(feasibility.get("resume_stage", "queued"))
+        else:
+            resume_stage = "extract_audio"
+        from .pipeline import normalize_stage_name as _ns
+        database.requeue_with_new_config(task_id, _ns(resume_stage), config_snapshot)
+        emit("task.requeued", {"task_id": task_id, "reason": "retry_with_model"})
+        return {"status": "queued", "task_id": task_id, "stage": resume_stage}
 
     # ---- Config import/export ----
     @app.get("/api/config/export")
