@@ -1,0 +1,87 @@
+# Self-hosted SubtitlePipeline + Emby 一键部署
+#
+# 用法:
+#   1. 把媒体库放进 ./data 目录(可改)
+#   2. docker compose -f docker-compose.emby.yml up -d
+#   3. 打开 http://localhost:8096 初始化 Emby
+#   4. 打开 http://localhost:8000 配置 SubtitlePipeline
+#      - 通知 & Webhook: webhook_enabled=true, webhook_type=emby,
+#        webhook_url=http://emby:8096, webhook_token=<Emby API key>,
+#        webhook_library_id=<你的 library id, 留空扫全部>
+#   5. SubtitlePipeline 输出的 .srt 直接落到 /data,与 Emby 媒体库同目录,
+#      Emby 定时扫描或通过 webhook 立即看到新字幕
+#
+# 数据卷:
+#   ./data   媒体库(Emby 和 SubtitlePipeline 共享读取;SubtitlePipeline 写 .srt 到这里)
+#   ./config SubtitlePipeline 配置 / 数据库
+#   ./emby-config  Emby 配置 / 缓存 / 元数据库
+#   ./models  ASR 模型(只 SubtitlePipeline 用)
+#   ./output  (可选)SubtitlePipeline 兜底输出目录
+#
+# 端口:
+#   8096  Emby Web UI
+#   8000  SubtitlePipeline Web UI
+#
+# 首次启动建议:
+#   - 在 Emby Web UI 完成首次初始化(管理员账号、媒体库扫描)
+#   - 在 Emby 控制台 → 高级 → API 密钥 创建一个,粘贴到 SubtitlePipeline webhook_token
+#   - 在 Emby 控制台 → 库 → 选中电影/电视剧库 → 查看 URL 末尾的数字 = library id
+
+services:
+  emby:
+    # Emby 官方镜像(amd64 + arm64 都支持),pin 一个稳定 4.8.x 版本
+    # 如要追新,改 4.8.11 为 4.9.0 等
+    image: emby/embyserver:4.8.11.0
+    container_name: emby
+    restart: unless-stopped
+    ports:
+      - "8096:8096"   # Web UI + API
+      - "8920:8920"   # HTTPS(可选;若不需可注释掉)
+    environment:
+      # UID/GID 映射到 host 当前用户,避免 NAS 上文件归属问题
+      UID: "${UID:-1000}"
+      GID: "${GID:-1000}"
+      # Emby 在容器内推荐用 TZ 控制时区
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - ./emby-config:/config
+      - ./data:/data   # 共享媒体库
+    # Emby 4.8+ 需要 /dev/dri 给硬件转码(NAS 没显卡时注释掉即可)
+    # devices:
+    #   - /dev/dri:/dev/dri
+    healthcheck:
+      # 简单 GET 探测,失败不重启容器(避免配置错误时无限重启)
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8096/emby/system/info/public"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  subpipeline:
+    # 本地 build,使用本仓库的 Dockerfile(包含前端 + supervisor + 三个进程)
+    build:
+      context: .
+      dockerfile: container/Dockerfile
+    container_name: subtitlepipeline
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      SUBPIPELINE_PORT: "8000"
+      SUBPIPELINE_DB_PATH: /config/subpipeline.db
+      SUBPIPELINE_FRONTEND_DIST: /app/frontend/dist
+      TZ: "${TZ:-Asia/Shanghai}"
+      # GPU 用户:若用 NVIDIA,加上 deploy.resources.reservations.devices
+      # (见 docker-compose.gpu.yml)
+      # 代理/镜像(可选)
+      # HTTP_PROXY: http://host.docker.internal:7890
+      # HTTPS_PROXY: http://host.docker.internal:7890
+      # HF_ENDPOINT: https://hf-mirror.com
+    volumes:
+      - ./data:/data            # 共享读取媒体库
+      - ./output:/output        # 兜底输出目录(若 output_to_source_dir=false)
+      - ./models:/models        # ASR 模型(只这个容器用)
+      - ./config:/config        # SubPipeline 配置 / DB
+    depends_on:
+      emby:
+        condition: service_started

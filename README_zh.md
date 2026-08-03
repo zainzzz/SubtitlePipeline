@@ -58,6 +58,20 @@ docker build -f container/Dockerfile.gpu -t subtitlepipeline:gpu .
 docker compose -f docker-compose.gpu.yml up -d
 ```
 
+### SubtitlePipeline + Emby 一键联动（家庭自用场景）
+
+NAS 上要把 SubtitlePipeline 和 Emby 一起跑在同一个 docker compose 网络里，
+用一个 compose 文件就启两个服务，字幕自动落到媒体库同目录、Emby 自动刷新：
+
+```bash
+docker compose -f docker-compose.emby.yml up -d
+```
+
+完整步骤、API key 申请、Library ID 获取、故障排查见
+[`docs/integrations/emby.md`](docs/integrations/emby.md)。
+
+Jellyfin / Plex 用户的接入方式也写在那篇文档最后一节。
+
 ### 挂载目录
 
 | 路径 | 用途 |
