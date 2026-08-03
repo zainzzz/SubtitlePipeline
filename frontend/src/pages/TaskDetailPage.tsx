@@ -197,6 +197,35 @@ export function TaskDetailPage() {
               </ul>
             </div>
           </div>
+          {task.result_payload?.quality_report ? (
+            <div className={`card quality-card quality-${task.result_payload.quality_report.is_suspect ? 'suspect' : 'ok'}`}>
+              <div className="card-header">
+                <h2>字幕质量自检</h2>
+                <div className="quality-score-block">
+                  <span className="quality-score">
+                    {task.result_payload.quality_report.score ?? '-'}
+                  </span>
+                  <span className="quality-score-suffix">/ 100</span>
+                </div>
+              </div>
+              <p className="quality-summary">{task.result_payload.quality_report.summary || '无问题'}</p>
+              {task.result_payload.quality_report.issues.length > 0 ? (
+                <ul className="quality-issues">
+                  {task.result_payload.quality_report.issues.map((issue, idx) => (
+                    <li key={`${issue.code}-${idx}`} className={`quality-issue severity-${issue.severity}`}>
+                      <span className={`quality-tag quality-tag-${issue.severity}`}>
+                        {issue.severity === 'error' ? '错误' : '警告'}
+                      </span>
+                      <span className="quality-message">{issue.message}</span>
+                      {issue.segment_index !== null && issue.segment_index !== undefined ? (
+                        <span className="quality-seg">第 {issue.segment_index + 1} 段</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
           {hasSubtitle ? (
             <div className="card subtitle-preview">
               <div className="card-header">

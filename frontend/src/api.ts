@@ -10,6 +10,36 @@ export type WebhookStatus = {
   detail: string | null
 }
 
+// ---- Quality report (post-pipeline check) ----
+export type QualitySeverity = 'warning' | 'error'
+
+export type QualityIssue = {
+  code: string
+  severity: QualitySeverity
+  message: string
+  segment_index: number | null
+  detail: Record<string, unknown> | null
+}
+
+export type QualityReport = {
+  score: number | null
+  issues: QualityIssue[]
+  suspect_segment_ids: number[]
+  is_suspect: boolean
+  summary: string
+}
+
+export type SuspectTaskItem = {
+  id: number
+  file_path: string
+  status: string
+  stage: string
+  progress: number
+  error_message: string | null
+  finished_at: string | null
+  quality_report: QualityReport
+}
+
 export type Task = {
   id: number
   file_path: string
@@ -24,6 +54,7 @@ export type Task = {
   result_payload?: {
     subtitle_paths?: string[]
     mux_path?: string
+    quality_report?: QualityReport | null
   } | null
   config_snapshot?: Record<string, unknown> | null
   created_at: string
@@ -562,6 +593,12 @@ export type DashboardStats = {
 
 export function getDashboardStats(): Promise<DashboardStats> {
   return request<DashboardStats>('/api/dashboard/stats')
+}
+
+export function getSuspectTasks(limit = 20): Promise<{ items: SuspectTaskItem[]; count: number }> {
+  return request<{ items: SuspectTaskItem[]; count: number }>(
+    `/api/dashboard/suspect-tasks?limit=${limit}`,
+  )
 }
 
 // ---- Batch operations ----

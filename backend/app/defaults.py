@@ -121,6 +121,16 @@ DEFAULT_CONFIG = {
         "prefer_languages": [],  # e.g. ["jpn", "eng"] — process each track in order
         "track_selection_mode": "first",  # first | prefer | all
     },
+    "quality": {
+        "enabled": True,
+        "min_avg_confidence": 0.6,        # ASR mean confidence floor; below this triggers a warning
+        "min_segment_duration": 0.8,      # segments shorter than this (s) are flagged
+        "max_segment_duration": 12.0,     # segments longer than this (s) are flagged
+        "max_repeat_segments": 3,         # N consecutive same-text segments → "ASR hallucination" error
+        "min_translation_char_ratio": 0.2, # translated/source char ratio lower bound
+        "max_translation_char_ratio": 3.0, # translated/source char ratio upper bound
+        "suspect_score_threshold": 80,    # tasks with score below this are listed as "可疑字幕"
+    },
 }
 
 SYSTEM_LEVEL_FIELDS = {

@@ -571,6 +571,18 @@ def create_app() -> FastAPI:
         database = get_database(app)
         return database.get_dashboard_stats()
 
+    @app.get("/api/dashboard/suspect-tasks")
+    def get_suspect_tasks(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
+        """List done tasks whose post-pipeline quality check flagged them as suspect.
+
+        Returns up to `limit` items (default 20, max 200) ordered by finished_at desc.
+        Each item includes the full `quality_report` so the UI can show score,
+        issues, and suspect segment indices without an extra round trip.
+        """
+        database = get_database(app)
+        items = database.get_suspect_tasks(limit=limit)
+        return {"items": items, "count": len(items)}
+
     # ---- Batch operations ----
     @app.post("/api/tasks/batch")
     def batch_tasks(request: BatchRequest) -> dict[str, Any]:

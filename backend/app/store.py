@@ -120,6 +120,27 @@ def _migrate_translation_config(translation_config: dict[str, Any]) -> None:
         translation_config["http_max_retries"] = 3
 
 
+def _migrate_quality_config(quality_config: dict[str, Any]) -> None:
+    """Backfill defaults for the new `quality` config block (2026-08).
+
+    All fields are tuning knobs; a missing block means "use defaults" so we
+    populate the entire dict rather than cherry-pick keys.
+    """
+    defaults = {
+        "enabled": True,
+        "min_avg_confidence": 0.6,
+        "min_segment_duration": 0.8,
+        "max_segment_duration": 12.0,
+        "max_repeat_segments": 3,
+        "min_translation_char_ratio": 0.2,
+        "max_translation_char_ratio": 3.0,
+        "suspect_score_threshold": 80,
+    }
+    for key, default in defaults.items():
+        if key not in quality_config or quality_config[key] is None:
+            quality_config[key] = default
+
+
 @dataclass
 class PageResult:
     items: list[dict[str, Any]]
@@ -373,6 +394,8 @@ class Database:
         _migrate_notification_config(notification_config)
         translation_config = defaults.setdefault("translation", {})
         _migrate_translation_config(translation_config)
+        quality_config = defaults.setdefault("quality", {})
+        _migrate_quality_config(quality_config)
         if defaults.get("whisper", {}).get("device") == "auto":
             defaults["whisper"]["device"] = detect_device()
         defaults["meta"] = {"restart_required": restart_required}
@@ -594,6 +617,8 @@ class Database:
             _migrate_notification_config(task["config_snapshot"]["notification"])
         if task["config_snapshot"] and isinstance(task["config_snapshot"].get("translation"), dict):
             _migrate_translation_config(task["config_snapshot"]["translation"])
+        if task["config_snapshot"] and isinstance(task["config_snapshot"].get("quality"), dict):
+            _migrate_quality_config(task["config_snapshot"]["quality"])
         return task
 
     def get_logs(self, task_id: int, page: int, page_size: int) -> PageResult:
@@ -1066,6 +1091,48 @@ class Database:
                 (task_id,),
             ).fetchone()
         return bool(row and row["cancel_requested"])
+
+    # ---- Quality / suspect task lookup ----
+
+    def get_suspect_tasks(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return done tasks whose `result_payload.quality_report.is_suspect` is true.
+
+        Used by the dashboard "可疑字幕" card. The lookup uses SQLite's
+        json_extract to avoid loading every done task into memory; tasks
+        without a quality_report (older runs) are silently skipped.
+        """
+        capped = max(1, min(int(limit), 200))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, file_path, status, stage, progress, error_message,
+                       result_payload, finished_at
+                FROM tasks
+                WHERE status = 'done'
+                  AND result_payload IS NOT NULL
+                  AND json_extract(result_payload, '$.quality_report.is_suspect') = 1
+                ORDER BY finished_at DESC, id DESC
+                LIMIT ?
+                """,
+                (capped,),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["result_payload"]) if row["result_payload"] else {}
+            quality = payload.get("quality_report") or {}
+            items.append(
+                {
+                    "id": row["id"],
+                    "file_path": row["file_path"],
+                    "status": row["status"],
+                    "stage": normalize_stage_name(str(row["stage"])),
+                    "progress": row["progress"],
+                    "error_message": row["error_message"],
+                    "finished_at": row["finished_at"],
+                    "quality_report": quality,
+                }
+            )
+        return items
 
     # ---- Dashboard statistics ----
 

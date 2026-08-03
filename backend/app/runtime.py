@@ -39,6 +39,7 @@ from .pipeline import (
     write_stage_artifacts,
     WhisperModelCache,
 )
+from .quality_checker import check_quality
 from .store import Database
 from .event_bus import emit
 
@@ -408,6 +409,30 @@ class WorkerService:
             raise PipelineError("缺少最终输出所需产物")
         if start_stage in {"queued", "extract_audio", "run_asr", "align_segments", "text_process", "translate", "subtitle_render", "output_finalize"}:
             result_payload = build_result_payload(context, audio_path, subtitle_paths, translations or {})
+            # Run the lightweight post-pipeline quality check so the UI can
+            # surface a "可疑字幕" list. Cheap (pure-Python, no IO), safe to
+            # call on every task. Result is stored inside result_payload and
+            # also logged as a WARNING if suspect.
+            quality_cfg = snapshot.get("quality", {}) or {}
+            if quality_cfg.get("enabled", True):
+                asr_segments = None
+                if isinstance(asr_result, dict):
+                    asr_segments = asr_result.get("segments")
+                quality = check_quality(
+                    processed_segments or [],
+                    translations or {},
+                    asr_segments=asr_segments if isinstance(asr_segments, list) else None,
+                    config=snapshot,
+                )
+                result_payload["quality_report"] = quality.to_dict()
+                if quality.is_suspect:
+                    self.database.log(
+                        task["id"],
+                        "output_finalize",
+                        "WARNING",
+                        f"字幕质量自检命中: {quality.summary}",
+                        {"score": quality.score, "issue_codes": [i.code for i in quality.issues]},
+                    )
             self._run_stage(task["id"], "output_finalize", 100, lambda: write_stage_artifacts(context, result_payload))
         if result_payload is None:
             raise PipelineError("缺少任务结果元数据")

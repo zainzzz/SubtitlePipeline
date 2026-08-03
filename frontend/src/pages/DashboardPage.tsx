@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react'
-import { getDashboardStats, DashboardStats } from '../api'
+import { Link } from 'react-router-dom'
+import {
+  getDashboardStats,
+  getSuspectTasks,
+  DashboardStats,
+  SuspectTaskItem,
+} from '../api'
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
@@ -8,6 +14,11 @@ function formatDuration(seconds: number): string {
   if (m < 60) return `${m}m ${s}s`
   const h = Math.floor(m / 60)
   return `${h}h ${m % 60}m`
+}
+
+function basename(path: string): string {
+  const parts = path.split('/')
+  return parts[parts.length - 1] || path
 }
 
 const stageLabels: Record<string, string> = {
@@ -24,13 +35,19 @@ const stageLabels: Record<string, string> = {
 
 export function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
+  const [suspectItems, setSuspectItems] = useState<SuspectTaskItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const load = async () => {
     setLoading(true)
     try {
-      setStats(await getDashboardStats())
+      const [statsResult, suspectResult] = await Promise.all([
+        getDashboardStats(),
+        getSuspectTasks(20),
+      ])
+      setStats(statsResult)
+      setSuspectItems(suspectResult.items)
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
@@ -86,6 +103,36 @@ export function DashboardPage() {
       </div>
 
       <div className="dashboard-charts">
+        <div className="chart-section suspect-section">
+          <h3>可疑字幕 ({suspectItems.length})</h3>
+          {suspectItems.length === 0 ? (
+            <p className="empty-hint">最近任务都通过了质量自检 ✓</p>
+          ) : (
+            <ul className="suspect-list">
+              {suspectItems.map((item) => {
+                const score = item.quality_report?.score
+                const errorCount = (item.quality_report?.issues || []).filter((i) => i.severity === 'error').length
+                const warningCount = (item.quality_report?.issues || []).filter((i) => i.severity === 'warning').length
+                return (
+                  <li key={item.id} className={`suspect-item severity-${errorCount > 0 ? 'error' : 'warning'}`}>
+                    <Link to={`/tasks/${item.id}`} className="suspect-link">
+                      <div className="suspect-header">
+                        <span className="suspect-score" title="质量评分">{score ?? '-'} 分</span>
+                        <span className="suspect-name" title={item.file_path}>{basename(item.file_path)}</span>
+                        <span className="suspect-badges">
+                          {errorCount > 0 ? <span className="badge badge-error">{errorCount} 错误</span> : null}
+                          {warningCount > 0 ? <span className="badge badge-warning">{warningCount} 警告</span> : null}
+                        </span>
+                      </div>
+                      <div className="suspect-summary">{item.quality_report?.summary || ''}</div>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+
         <div className="chart-section">
           <h3>每日完成趋势（近14天）</h3>
           {stats.daily_trend.length === 0 ? (
