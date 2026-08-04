@@ -249,6 +249,10 @@ class ModelManager:
         self.models_root.mkdir(parents=True, exist_ok=True)
         self._states: dict[str, DownloadState] = {}
         self._lock = threading.RLock()
+        # Per-spec wake events used by `_watch_download` to exit immediately
+        # when the state changes (download completes, errors, or token
+        # invalidation), instead of waiting for the next poll period.
+        self._wake_events: dict[str, threading.Event] = {}
         self.stall_timeout_seconds = max(int(stall_timeout_seconds), 1)
 
     def get_spec(self, name: str, provider: str | None = None) -> ModelSpec:
@@ -316,6 +320,11 @@ class ModelManager:
             if self._is_installed(model_dir):
                 raise ValueError(f"模型 {spec.name} 已安装")
             token = int(now * 1000)
+            # Replace any prior wake event (in case of a re-download) so
+            # the new watcher's `wait()` doesn't get a stale wakeup from a
+            # previous run.
+            wake = threading.Event()
+            self._wake_events[spec.name] = wake
             self._states[spec.name] = DownloadState(
                 status="downloading",
                 stalled=False,
@@ -327,6 +336,9 @@ class ModelManager:
         model_dir.mkdir(parents=True, exist_ok=True)
         threading.Thread(target=self._download_model, args=(spec, token), daemon=True).start()
         threading.Thread(target=self._watch_download, args=(spec, token), daemon=True).start()
+        # Nudge the watcher so it doesn't sleep for DOWNLOAD_PROGRESS_POLL_SECONDS
+        # before its first state check.
+        wake.set()
 
     def delete_model(self, name: str, current_model: str) -> None:
         spec = self.get_spec(name)
@@ -342,6 +354,7 @@ class ModelManager:
             shutil.rmtree(model_dir)
         with self._lock:
             self._states.pop(spec.name, None)
+            self._wake_events.pop(spec.name, None)
 
     def _download_model(self, spec: ModelSpec, token: int) -> None:
         model_dir = self.models_root / spec.name
@@ -362,6 +375,10 @@ class ModelManager:
                     manual_download_url=self._manual_download_url(spec),
                     token=token,
                 )
+                # Wake the watch thread so it exits immediately rather than
+                # waiting up to DOWNLOAD_PROGRESS_POLL_SECONDS for its next
+                # poll cycle.
+                self._wake_events.get(spec.name, threading.Event()).set()
             return
         with self._lock:
             state = self._states.get(spec.name)
@@ -373,11 +390,21 @@ class ModelManager:
                 manual_download_url=self._manual_download_url(spec),
                 token=token,
             )
+            # Download finished — wake the watch thread so it exits
+            # immediately rather than waiting for the next poll cycle.
+            self._wake_events.get(spec.name, threading.Event()).set()
 
     def _watch_download(self, spec: ModelSpec, token: int) -> None:
         model_dir = self.models_root / spec.name
+        wake = self._wake_events.get(spec.name)
+        if wake is None:
+            # Race: state cleared before watcher started. Nothing to do.
+            return
         while True:
-            time.sleep(DOWNLOAD_PROGRESS_POLL_SECONDS)
+            # Block until either (a) the state changes (e.g. download
+            # finished) or (b) the poll period elapses (regular progress /
+            # stall check).
+            wake.wait(timeout=DOWNLOAD_PROGRESS_POLL_SECONDS)
             current_size = self._directory_size(model_dir)
             now = time.time()
             with self._lock:
@@ -393,8 +420,7 @@ class ModelManager:
                         last_size_bytes=current_size,
                         token=token,
                     )
-                    continue
-                if now - state.last_progress_at >= self.stall_timeout_seconds and not state.stalled:
+                elif now - state.last_progress_at >= self.stall_timeout_seconds and not state.stalled:
                     self._states[spec.name] = DownloadState(
                         status="downloading",
                         error=self._build_manual_download_message(spec, f"下载超过 {self.stall_timeout_seconds} 秒没有进度"),
