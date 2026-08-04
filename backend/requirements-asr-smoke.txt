@@ -1,0 +1,20 @@
+# ASR-enabled smoke build. Like requirements-smoke.txt but adds ONE real
+# ASR provider (faster-whisper + ctranslate2) so the smoke test can
+# exercise the actual transcription pipeline on a known fixture
+# (backend/tests/fixtures/zh_sample.wav).
+#
+# Why faster-whisper:
+# - It's the smallest ML dep in the project (ctranslate2 + tokenizers;
+#   no torch). Tiny model is ~75 MB; base ~150 MB.
+# - Works on aarch64 (Apple Silicon) without torch / GPU.
+# - Gives us a real Chinese transcription result in <30s on a short clip.
+#
+# Used by scripts/docker-smoke-asr.sh to validate that the full pipeline
+# (extract_audio → run_asr → align_segments → text_process → translate →
+# subtitle_render → output_finalize → quality_checker) actually produces a
+# usable .srt with correct Chinese characters. NOT used in production.
+-r requirements-smoke.txt
+faster-whisper==1.2.1
+ctranslate2==4.6.0
+tokenizers==0.21.4
+onnxruntime==1.23.2

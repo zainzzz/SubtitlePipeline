@@ -22,12 +22,19 @@ RUN apt-get update \
 WORKDIR /app
 COPY backend/requirements.txt /app/backend/requirements.txt
 COPY backend/requirements-smoke.txt /app/backend/requirements-smoke.txt
+COPY backend/requirements-asr-smoke.txt /app/backend/requirements-asr-smoke.txt
 ARG PIP_INDEX_URL=https://pypi.org/simple
 # SMOKE_BUILD=1 swaps in a minimal requirements file (no whisperx/torch/etc.)
 # so a host without GPU + ML toolchain can still validate the container build
 # and the non-ML portions of the codebase. See scripts/docker-smoke.sh.
+# ASR_SMOKE=1 layers faster-whisper on top of smoke deps so we can also run
+# a real (Chinese) transcription on a known fixture. See
+# scripts/docker-smoke-asr.sh.
 ARG SMOKE_BUILD=0
-RUN if [ "$SMOKE_BUILD" = "1" ]; then \
+ARG ASR_SMOKE=0
+RUN if [ "$ASR_SMOKE" = "1" ]; then \
+        pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements-asr-smoke.txt; \
+    elif [ "$SMOKE_BUILD" = "1" ]; then \
         pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements-smoke.txt; \
     else \
         pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements.txt; \
