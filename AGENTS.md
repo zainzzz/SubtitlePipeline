@@ -171,10 +171,12 @@ Configuration is stored in SQLite (`system_config` table) and managed via `/api/
 
 - `file`: input_dir, output_to_source_dir, allowed_extensions, scan_interval
 - `whisper`: provider, model_name, device (auto-detected), provider_config
-- `translation`: enabled, target_languages, api_base_url, api_key, model, content_type
+- `translation`: enabled, target_languages, api_base_url, api_key, model, content_type, sampling params (temperature, max_tokens, frequency_penalty, presence_penalty, http_max_retries)
 - `subtitle`: bilingual, bilingual_mode (merge/separate), filename_template, source_language
 - `mux`: enabled, filename_template
 - `processing`: max_retries, retry_mode (restart/resume), work_dir
+- `notification`: webhook settings + `trigger_on_subtitle_change` (also fire on edit/retranslate), `subtitle_change_debounce_seconds`
+- `quality`: post-pipeline self-check thresholds (see Post-Pipeline Quality Check)
 
 **Read-Only Fields:** `whisper.device` is auto-detected and cannot be modified via API.
 
