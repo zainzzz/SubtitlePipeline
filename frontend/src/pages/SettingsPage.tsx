@@ -924,6 +924,24 @@ export function SettingsPage() {
                   <span>保留中间产物</span>
                   <input type="checkbox" checked={config.processing.keep_intermediates} onChange={(event) => setField('processing', 'keep_intermediates', event.target.checked)} />
                 </label>
+                <label className="switch-row" style={{ gridColumn: '1 / -1' }}>
+                  <span>ASR 前置资源检查（GPU 显存 + 工作目录磁盘空间，NAS 自用建议开启）</span>
+                  <input
+                    type="checkbox"
+                    checked={config.processing.pre_asr_resource_check}
+                    onChange={(event) => setField('processing', 'pre_asr_resource_check', event.target.checked)}
+                  />
+                </label>
+                <label>
+                  <span>资源余量百分比（0-80）</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={80}
+                    value={config.processing.resource_headroom_pct}
+                    onChange={(event) => setField('processing', 'resource_headroom_pct', Math.max(0, Math.min(80, Number(event.target.value) || 0)))}
+                  />
+                </label>
                 <label>
                   <span>日志级别</span>
                   <select value={config.logging.level} onChange={(event) => setField('logging', 'level', event.target.value)}>

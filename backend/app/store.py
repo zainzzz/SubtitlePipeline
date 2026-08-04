@@ -141,6 +141,16 @@ def _migrate_quality_config(quality_config: dict[str, Any]) -> None:
             quality_config[key] = default
 
 
+def _migrate_processing_config(processing_config: dict[str, Any]) -> None:
+    """Backfill defaults for the new pre-ASR resource check fields."""
+    if not isinstance(processing_config.get("pre_asr_resource_check"), bool):
+        processing_config["pre_asr_resource_check"] = True
+    if not isinstance(processing_config.get("resource_headroom_pct"), (int, float)):
+        processing_config["resource_headroom_pct"] = 20
+    elif not (0 <= float(processing_config["resource_headroom_pct"]) <= 80):
+        processing_config["resource_headroom_pct"] = 20
+
+
 @dataclass
 class PageResult:
     items: list[dict[str, Any]]
@@ -396,6 +406,8 @@ class Database:
         _migrate_translation_config(translation_config)
         quality_config = defaults.setdefault("quality", {})
         _migrate_quality_config(quality_config)
+        processing_config = defaults.setdefault("processing", {})
+        _migrate_processing_config(processing_config)
         if defaults.get("whisper", {}).get("device") == "auto":
             defaults["whisper"]["device"] = detect_device()
         defaults["meta"] = {"restart_required": restart_required}
@@ -619,6 +631,8 @@ class Database:
             _migrate_translation_config(task["config_snapshot"]["translation"])
         if task["config_snapshot"] and isinstance(task["config_snapshot"].get("quality"), dict):
             _migrate_quality_config(task["config_snapshot"]["quality"])
+        if task["config_snapshot"] and isinstance(task["config_snapshot"].get("processing"), dict):
+            _migrate_processing_config(task["config_snapshot"]["processing"])
         return task
 
     def get_logs(self, task_id: int, page: int, page_size: int) -> PageResult:

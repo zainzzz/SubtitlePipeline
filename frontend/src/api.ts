@@ -143,6 +143,8 @@ export type AppConfig = {
     keep_intermediates: boolean
     poll_interval_seconds: number
     work_dir: string
+    pre_asr_resource_check: boolean
+    resource_headroom_pct: number
   }
   whisper: {
     provider: ASRProvider
@@ -366,6 +368,8 @@ export const defaultAppConfig: AppConfig = {
     keep_intermediates: false,
     poll_interval_seconds: 2,
     work_dir: '/config/work',
+    pre_asr_resource_check: true,
+    resource_headroom_pct: 20,
   },
   whisper: {
     provider: 'whisperx',

@@ -41,6 +41,14 @@ DEFAULT_CONFIG = {
         "keep_intermediates": False,
         "poll_interval_seconds": 2,
         "work_dir": "/config/work",
+        # Pre-ASR resource check: refuse to start Whisper/Qwen if the GPU
+        # doesn't have enough VRAM or work_dir doesn't have enough free disk.
+        # Set to false for power-user / GPU-sharing setups where they want
+        # the worker to try anyway.
+        "pre_asr_resource_check": True,
+        # Headroom percentage added on top of the estimated requirement,
+        # so other processes (or temp spikes) don't push us into OOM.
+        "resource_headroom_pct": 20,
     },
     "whisper": {
         "provider": "whisperx",

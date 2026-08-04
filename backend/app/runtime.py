@@ -41,6 +41,7 @@ from .pipeline import (
 )
 from .quality_checker import check_quality
 from .store import Database, normalize_path
+from .system_monitor import check_resources as check_asr_resources
 from .event_bus import emit
 
 
@@ -357,6 +358,42 @@ class WorkerService:
         except Exception:
             logger.debug("webhook notification failed", exc_info=True)
 
+    def _check_pre_asr_resources(self, task: dict[str, Any], snapshot: dict[str, Any], audio_path: Path) -> None:
+        """Refuse to launch ASR if GPU/disk can't handle the task.
+
+        Skipped silently when pre_asr_resource_check is disabled. On
+        insufficient resources, logs the full recommendation list to the
+        task log and raises PipelineError — the caller (process_next_task)
+        marks the task failed with a user-readable message.
+        """
+        config = self.database.get_config()
+        proc_cfg = (config.get("processing") or {}) if isinstance(config, dict) else {}
+        if not proc_cfg.get("pre_asr_resource_check", True):
+            return
+        try:
+            audio_size = audio_path.stat().st_size
+        except OSError as exc:
+            logger.warning("pre_asr: cannot stat audio %s: %s", audio_path, exc)
+            return
+        work_dir = Path(snapshot["processing"]["work_dir"])
+        model_name = str(snapshot.get("whisper", {}).get("model_name", "") or "")
+        check = check_asr_resources(model_name, audio_size, work_dir, config=config)
+        if check.ok:
+            logger.info(
+                "pre_asr resource check passed for task %s (gpu=%s MB free, disk=%s MB free)",
+                task["id"], check.gpu_available_mb, check.disk_available_mb,
+            )
+            return
+        # Compose a human-readable message. The PipelineError text becomes
+        # the task's error_message; the structured payload is in the log
+        # for debugging.
+        reasons = [r for r in (check.gpu_reason, check.disk_reason) if r]
+        recommendations = "\n".join(f"  - {r}" for r in check.recommendations) or "  (no specific suggestions)"
+        message = "ASR 前置资源检查未通过：\n" + "\n".join(reasons) + "\n建议：\n" + recommendations
+        logger.warning("pre_asr resource check failed for task %s: %s", task["id"], message)
+        self.database.log(task["id"], "run_asr", "ERROR", message, check.to_dict())
+        raise PipelineError(message)
+
     def _process_claimed_task(self, task: dict[str, Any]) -> dict[str, Any]:
         snapshot = task["config_snapshot"]
         if snapshot is None:
@@ -407,6 +444,10 @@ class WorkerService:
         if start_stage in {"queued", "extract_audio", "run_asr"}:
             if audio_path is None:
                 raise PipelineError("缺少音频文件，无法执行 ASR")
+            # Pre-flight: refuse to launch ASR if the GPU doesn't have
+            # enough VRAM or work_dir is about to fill the disk. This
+            # protects self-hosted NAS boxes from a runaway model load.
+            self._check_pre_asr_resources(task, snapshot, audio_path)
             asr_result = self._run_stage(task["id"], "run_asr", 35, lambda: run_asr(context, audio_path, self.model_cache, self.database))
             save_asr_result(context, asr_result)
         if start_stage in {"queued", "extract_audio", "run_asr", "align_segments"}:
