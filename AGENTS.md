@@ -124,6 +124,24 @@ Four providers:
 **Provider-Specific Configuration:**
 Each provider has its own config section (`whisperx`, `faster_whisper`, `anime_whisper`, `qwen`) with provider-specific tuning options (VAD, alignment, temperature, etc.).
 
+### Post-Pipeline Quality Check
+
+`app/quality_checker.py` runs a lightweight, pure-Python check over the
+aligned segments + translations + (optional) ASR confidence after every
+successful task. Results land in `tasks.result_payload.quality_report` and
+feed the Dashboard "可疑字幕" card.
+
+- Checks: low ASR confidence, abnormal segment duration, ASR hallucination
+  (consecutive identical segments), empty translations, source/translation
+  character ratio anomalies, suspiciously few segments.
+- Output: `QualityReport { score 0-100, issues, suspect_segment_ids, is_suspect, summary }`.
+- Score formula: `100 - sum(penalties)`, clamped to [0, 100]; error -25, warning -8.
+- Tunable via the `quality` config block (`min_avg_confidence`, `min_segment_duration`,
+  `max_segment_duration`, `max_repeat_segments`, `min/max_translation_char_ratio`,
+  `suspect_score_threshold`).
+- `app/store.py` exposes `get_suspect_tasks(limit)` to drive the Dashboard; the UI
+  helper is `GET /api/dashboard/suspect-tasks`.
+
 ### Database Layer
 
 `app/store.py` provides the `Database` class with these responsibilities:
