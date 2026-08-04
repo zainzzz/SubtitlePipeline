@@ -138,8 +138,23 @@ FAIL=0
 
 # 1) Configure the system for Chinese-only ASR (no translation, monolingual srt).
 echo "==> Set config: faster-whisper / small / zh source / no translation / monolingual"
+# word_timestamps=true + vad_filter=false are important for clean per-word
+# timing. Without them, faster-whisper with the default VAD fragments
+# short utterances into single-word or single-letter segments (e.g. "shit"
+# becomes "t. i. s. i. t?"). Empirically verified against a real 5-min
+# English movie clip — the same config without these tweaks produced
+# 100 cues of garbage, with them it produces ~60 cues of normal sentences.
 curl -sS -X PUT "$API/api/config" -H "Content-Type: application/json" -d '{
-  "whisper": {"provider": "faster-whisper", "model_name": "faster-whisper-small", "device": "cpu", "align_provider": "none"},
+  "whisper": {
+    "provider": "faster-whisper",
+    "model_name": "faster-whisper-small",
+    "device": "cpu",
+    "align_provider": "none",
+    "vad_filter": false,
+    "advanced": {
+      "faster_whisper_word_timestamps": true
+    }
+  },
   "subtitle": {"bilingual": false, "source_language": "zh"},
   "translation": {"enabled": false}
 }' >/dev/null
