@@ -19,20 +19,28 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends python3 python3-pip python3-venv libpython3.10 supervisor ffmpeg curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system subpipeline \
+    && useradd  --system --gid subpipeline --home-dir /app --shell /usr/sbin/nologin subpipeline
 
 WORKDIR /app
 COPY backend/requirements-gpu.txt /app/backend/requirements-gpu.txt
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && python3 -m pip install --no-cache-dir "numpy<2" \
     && python3 -m pip install --no-cache-dir --no-build-isolation -r /app/backend/requirements-gpu.txt \
-    && mkdir -p /data /output /models /config
+    && mkdir -p /data /output /models /config \
+    && chown -R subpipeline:subpipeline /data /output /models /config /app
 
-COPY backend /app/backend
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+COPY --chown=subpipeline:subpipeline backend /app/backend
+COPY --from=frontend-build --chown=subpipeline:subpipeline /app/frontend/dist /app/frontend/dist
 COPY container/supervisord.conf /etc/supervisor/conf.d/subpipeline.conf
 
 EXPOSE 8000
 VOLUME ["/data", "/output", "/models", "/config"]
 
+# supervisord itself runs as root and drops to the unprivileged
+# `subpipeline` user for the api / scanner / worker processes — see
+# supervisord.conf. NOTE: NVIDIA CUDA users sometimes need extra group
+# access (e.g. `video`) for GPU enumeration; add it via `group=` in
+# supervisord.conf if your environment requires.
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/subpipeline.conf"]
