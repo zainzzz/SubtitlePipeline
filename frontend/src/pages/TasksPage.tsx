@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { batchTasks, cancelTask, checkResumeFeasibility, createManualTask, deleteTask, getScanStatus, getTasks, retryTask, ResumeCheckResponse, ScanStatus, setScanEnabled, TaskListResponse } from '../api'
-import { useEventStream, usePolling } from '../hooks'
+import { usePolling } from '../hooks'
 import { DirectoryPicker } from '../components/DirectoryPicker'
 
 const PAGE_SIZE = 20
@@ -83,10 +83,6 @@ export function TasksPage() {
       if (!quiet) setLoading(false)
     }
   }, [activeTab, currentPage, searchQuery])
-
-  useEventStream('/api/events', () => {
-    void load({ quiet: true })
-  }, [])
 
   usePolling(() => load({ quiet: true }), 3000, [activeTab, currentPage, searchQuery])
 

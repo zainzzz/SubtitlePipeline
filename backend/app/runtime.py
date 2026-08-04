@@ -42,7 +42,6 @@ from .pipeline import (
 from .quality_checker import check_quality
 from .store import Database, normalize_path
 from .system_monitor import check_resources as check_asr_resources
-from .event_bus import emit
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".m4v"}
@@ -334,20 +333,16 @@ class WorkerService:
         task = self.database.claim_next_pending_task()
         if not task:
             return False
-        emit("task.started", {"task_id": task["id"], "file_path": task["file_path"], "stage": task["stage"]})
         try:
             result_payload = self._process_claimed_task(task)
             self.database.mark_task_done(task["id"], result_payload)
-            emit("task.done", {"task_id": task["id"], "file_path": task["file_path"]})
             self._send_webhook(task)
         except CancellationRequested:
             latest = self.database.get_task(task["id"])
             self.database.mark_task_cancelled(task["id"], latest["stage"] if latest else task["stage"])
-            emit("task.cancelled", {"task_id": task["id"]})
         except Exception as exc:
             latest = self.database.get_task(task["id"])
             self.database.mark_task_failure(task["id"], latest["stage"] if latest else task["stage"], str(exc))
-            emit("task.failed", {"task_id": task["id"], "error": str(exc)})
         return True
 
     def _send_webhook(self, task: dict[str, Any]) -> None:
@@ -543,7 +538,6 @@ class WorkerService:
         self._ensure_not_cancelled(task_id, stage)
         self.database.update_task_stage(task_id, stage, progress)
         self.database.log(task_id, stage, "INFO", f"开始阶段 {stage}")
-        emit("task.progress", {"task_id": task_id, "stage": stage, "progress": progress})
         result = action()
         self.database.log(task_id, stage, "INFO", f"完成阶段 {stage}")
         self._ensure_not_cancelled(task_id, stage)

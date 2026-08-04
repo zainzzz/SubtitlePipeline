@@ -15,7 +15,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .event_bus import get_event_bus
 from .logging_utils import setup_logging
 from .model_manager import (
     DEFAULT_PROVIDER,
@@ -722,7 +721,6 @@ def create_app() -> FastAPI:
         if request and request.target_languages:
             config_snapshot = {**config_snapshot, "translation": {**config_snapshot.get("translation", {}), "target_languages": list(request.target_languages)}}
         database.requeue_with_new_config(task_id, "translate", config_snapshot)
-        emit("task.requeued", {"task_id": task_id, "reason": "retranslate"})
         return {"status": "queued", "task_id": task_id}
 
     # ---- Manual subtitle-change webhook re-trigger ----
@@ -775,7 +773,6 @@ def create_app() -> FastAPI:
             resume_stage = "extract_audio"
         from .pipeline import normalize_stage_name as _ns
         database.requeue_with_new_config(task_id, _ns(resume_stage), config_snapshot)
-        emit("task.requeued", {"task_id": task_id, "reason": "retry_with_model"})
         return {"status": "queued", "task_id": task_id, "stage": resume_stage}
 
     # ---- Config import/export ----
@@ -794,26 +791,6 @@ def create_app() -> FastAPI:
             return database.update_config(payload)
         except KeyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # ---- SSE ----
-    @app.get("/api/events")
-    async def sse_events():
-        bus = get_event_bus()
-        q = bus.subscribe()
-
-        async def event_stream():
-            try:
-                yield f"data: {json.dumps({'type': 'connected', 'timestamp': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()})}\n\n"
-                while True:
-                    try:
-                        event = await asyncio.wait_for(q.get(), timeout=30)
-                        yield f"data: {json.dumps(event)}\n\n"
-                    except asyncio.TimeoutError:
-                        yield ": keepalive\n\n"
-            finally:
-                bus.unsubscribe(q)
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     # ---- Manual task creation ----
     @app.post("/api/tasks/manual")
@@ -857,7 +834,6 @@ def create_app() -> FastAPI:
                 result["scanner"] = {"running": True, "pid": pid}
             elif "app.worker_process" in cmdline:
                 result["worker"] = {"running": True, "pid": pid}
-        result["sse_subscribers"] = get_event_bus().subscriber_count()
         result["all_healthy"] = result["scanner"]["running"] and result["worker"]["running"] and result["api"]["running"]
         return result
 
