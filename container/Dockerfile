@@ -21,8 +21,17 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY backend/requirements.txt /app/backend/requirements.txt
+COPY backend/requirements-smoke.txt /app/backend/requirements-smoke.txt
 ARG PIP_INDEX_URL=https://pypi.org/simple
-RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements.txt \
+# SMOKE_BUILD=1 swaps in a minimal requirements file (no whisperx/torch/etc.)
+# so a host without GPU + ML toolchain can still validate the container build
+# and the non-ML portions of the codebase. See scripts/docker-smoke.sh.
+ARG SMOKE_BUILD=0
+RUN if [ "$SMOKE_BUILD" = "1" ]; then \
+        pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements-smoke.txt; \
+    else \
+        pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /app/backend/requirements.txt; \
+    fi \
     && mkdir -p /data /output /models /config \
     && chown -R subpipeline:subpipeline /data /output /models /config /app
 

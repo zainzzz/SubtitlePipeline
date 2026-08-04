@@ -1,0 +1,12 @@
+# Minimal requirements for a smoke-test image: everything the API + worker
+# + scanner need to import and start, but NO ML/ASR dependencies. Used by
+# scripts/docker-smoke.sh to validate that the non-ML parts of a deploy
+# (config layer, state machine, webhook plumbing, quality checker, system
+# monitor) work in a real container, without paying the whisperx/torch
+# build cost on every smoke run.
+fastapi==0.116.1
+uvicorn==0.35.0
+pydantic==2.11.7
+httpx==0.28.1
+openai==2.11.0
+huggingface_hub==0.35.3
