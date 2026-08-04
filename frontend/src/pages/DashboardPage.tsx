@@ -6,20 +6,7 @@ import {
   DashboardStats,
   SuspectTaskItem,
 } from '../api'
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  if (m < 60) return `${m}m ${s}s`
-  const h = Math.floor(m / 60)
-  return `${h}h ${m % 60}m`
-}
-
-function basename(path: string): string {
-  const parts = path.split('/')
-  return parts[parts.length - 1] || path
-}
+import { basename, formatDuration } from '../utils/path'
 
 const stageLabels: Record<string, string> = {
   extract_audio: '音频提取',
